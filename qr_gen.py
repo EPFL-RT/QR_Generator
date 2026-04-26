@@ -1,41 +1,64 @@
+import os
+import sys
 import qrcode
 from PIL import Image
 
-url = "https://www.epflracingteam.ch/en"
-img = "assets/logo.png"
+try:
+    import tomllib
+except ImportError:
+    import tomli as tomllib
 
-# Create QR with high error correction
+EC_LEVELS = {
+    "L": qrcode.constants.ERROR_CORRECT_L,
+    "M": qrcode.constants.ERROR_CORRECT_M,
+    "Q": qrcode.constants.ERROR_CORRECT_Q,
+    "H": qrcode.constants.ERROR_CORRECT_H,
+}
+
+config_path = sys.argv[1] if len(sys.argv) > 1 else "config.toml"
+with open(config_path, "rb") as f:
+    cfg = tomllib.load(f)
+
+qr_cfg   = cfg["qr"]
+logo_cfg = cfg.get("logo")
+out_cfg  = cfg["output"]
+
 qr = qrcode.QRCode(
-    error_correction=qrcode.constants.ERROR_CORRECT_H,
-    box_size=40,
-    border=1,
+    error_correction=EC_LEVELS[qr_cfg["error_correction"]],
+    box_size=qr_cfg["box_size"],
+    border=qr_cfg["border"],
 )
-qr.add_data(url)
+qr.add_data(qr_cfg["url"])
 qr.make(fit=True)
 
-qr_img = qr.make_image(fill_color="black", back_color="white").convert("RGB")
+qr_img = qr.make_image(
+    fill_color=qr_cfg["fill_color"],
+    back_color=qr_cfg["back_color"],
+).convert("RGB")
 
-# Load and resize logo
-logo = Image.open(img)
+if logo_cfg and logo_cfg.get("path"):
+    logo = Image.open(logo_cfg["path"])
 
-qr_w, qr_h = qr_img.size
-max_logo_size = int(qr_w * 0.3)  # 20% of QR width
+    qr_w, qr_h = qr_img.size
+    max_logo_px = int(qr_w * logo_cfg["max_size_ratio"])
 
-# Resize preserving aspect ratio
-orig_w, orig_h = logo.size
-scale = min(max_logo_size / orig_w, max_logo_size / orig_h)
-logo_w, logo_h = int(orig_w * scale), int(orig_h * scale)
-logo = logo.resize((logo_w, logo_h), Image.LANCZOS)
+    orig_w, orig_h = logo.size
+    scale = min(max_logo_px / orig_w, max_logo_px / orig_h)
+    logo_w, logo_h = int(orig_w * scale), int(orig_h * scale)
+    logo = logo.resize((logo_w, logo_h), Image.LANCZOS)
 
-# Compute position (center)
-pos = ((qr_w - logo_w) // 2, (qr_h - logo_h) // 2)
+    pos = ((qr_w - logo_w) // 2, (qr_h - logo_h) // 2)
 
-# Optional: add white background behind logo for contrast
-bg = Image.new("RGB", (logo_w + 30, logo_h + 80), "white")
-bg_pos = ((qr_w - bg.size[0]) // 2, (qr_h - bg.size[1]) // 2)
-qr_img.paste(bg, bg_pos)
+    bg = Image.new(
+        "RGB",
+        (logo_w + logo_cfg["bg_padding_x"], logo_h + logo_cfg["bg_padding_y"]),
+        qr_cfg["back_color"],
+    )
+    bg_pos = ((qr_w - bg.size[0]) // 2, (qr_h - bg.size[1]) // 2)
+    qr_img.paste(bg, bg_pos)
+    qr_img.paste(logo, pos, mask=logo if logo.mode == "RGBA" else None)
 
-# Paste logo
-qr_img.paste(logo, pos, mask=logo if logo.mode == "RGBA" else None)
-
-qr_img.save("out/qr_with_logo.png")
+out_path = out_cfg["path"]
+os.makedirs(os.path.dirname(out_path), exist_ok=True)
+qr_img.save(out_path)
+print(f"Saved: {out_path}")
