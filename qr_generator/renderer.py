@@ -45,6 +45,7 @@ class QrStyle:
     box_size: int = 24
     border: int = 4
     fill_color: str = "#000000"
+    gradient_color: str = ""
     back_color: str = "#FFFFFF"
     eye_color: str = "#000000"
     module_style: ModuleStyle = ModuleStyle.SQUARE
@@ -130,7 +131,7 @@ def generate_qr_svg(
         for x, active in enumerate(row):
             if not active or _is_finder_module(x, y, finder_origins):
                 continue
-            parts.append(_svg_data_module(x, y, style))
+            parts.append(_svg_data_module(x, y, style, modules))
 
     for origin in finder_origins:
         parts.extend(_svg_finder(origin, style))
@@ -196,6 +197,13 @@ def assess_scan_quality(
         add_warning("Use much stronger contrast between Fill Color and Background.", 30)
     elif fill_contrast < 4.5:
         add_warning("Increase contrast between Fill Color and Background for better scanning.", 18)
+
+    if style.gradient_color:
+        gradient_contrast = _contrast_ratio(style.gradient_color, style.back_color)
+        if gradient_contrast < 3:
+            add_warning("Use a darker Gradient Color or a lighter Background.", 24)
+        elif gradient_contrast < 4.5:
+            add_warning("Increase Gradient Color contrast for better scanning.", 14)
 
     eye_contrast = _contrast_ratio(_eye_color(style), style.back_color)
     if eye_contrast < 3:
@@ -263,6 +271,7 @@ def _draw_matrix(matrix: list[list[bool]], style: QrStyle) -> Image.Image:
         box_size=box,
         border=style.border,
         fill_color=style.fill_color,
+        gradient_color=style.gradient_color,
         back_color=style.back_color,
         eye_color=style.eye_color,
         module_style=style.module_style,
@@ -278,7 +287,7 @@ def _draw_matrix(matrix: list[list[bool]], style: QrStyle) -> Image.Image:
         for x, active in enumerate(row):
             if not active or _is_finder_module(x, y, finder_origins):
                 continue
-            _draw_data_module(draw, x, y, draw_style)
+            _draw_data_module(draw, x, y, draw_style, modules)
 
     for origin in finder_origins:
         _draw_finder(draw, origin, draw_style)
@@ -294,7 +303,7 @@ def _render_scale(style: QrStyle) -> int:
     return 3
 
 
-def _draw_data_module(draw: ImageDraw.ImageDraw, x: int, y: int, style: QrStyle) -> None:
+def _draw_data_module(draw: ImageDraw.ImageDraw, x: int, y: int, style: QrStyle, modules: int) -> None:
     box = style.box_size
     left = x * box
     top = y * box
@@ -312,12 +321,13 @@ def _draw_data_module(draw: ImageDraw.ImageDraw, x: int, y: int, style: QrStyle)
         radius = box
 
     bounds = (left + inset, top + inset, right - inset, bottom - inset)
+    fill = _module_fill(style, y, modules)
     if style.module_style == ModuleStyle.DOTS:
-        draw.ellipse(bounds, fill=style.fill_color)
+        draw.ellipse(bounds, fill=fill)
     elif radius:
-        draw.rounded_rectangle(bounds, radius=radius, fill=style.fill_color)
+        draw.rounded_rectangle(bounds, radius=radius, fill=fill)
     else:
-        draw.rectangle(bounds, fill=style.fill_color)
+        draw.rectangle(bounds, fill=fill)
 
 
 def _finder_origins(modules: int, border: int) -> tuple[tuple[int, int], ...]:
@@ -366,11 +376,18 @@ def _eye_color(style: QrStyle) -> str:
     return style.eye_color or style.fill_color
 
 
-def _svg_data_module(x: int, y: int, style: QrStyle) -> str:
+def _module_fill(style: QrStyle, y: int, modules: int) -> str:
+    if not style.gradient_color:
+        return style.fill_color
+    ratio = y / max(1, modules - 1)
+    return _interpolate_color(style.fill_color, style.gradient_color, ratio)
+
+
+def _svg_data_module(x: int, y: int, style: QrStyle, modules: int) -> str:
     box = style.box_size
     left = x * box
     top = y * box
-    fill = _svg_escape(style.fill_color)
+    fill = _svg_escape(_module_fill(style, y, modules))
 
     if style.module_style == ModuleStyle.SQUARE:
         return f'<rect x="{left}" y="{top}" width="{box}" height="{box}" fill="{fill}"/>'
@@ -498,6 +515,13 @@ def _contrast_ratio(color_a: str, color_b: str) -> float:
     lighter = max(rgb_a, rgb_b)
     darker = min(rgb_a, rgb_b)
     return (lighter + 0.05) / (darker + 0.05)
+
+
+def _interpolate_color(color_a: str, color_b: str, ratio: float) -> str:
+    rgb_a = ImageColor.getrgb(color_a)[:3]
+    rgb_b = ImageColor.getrgb(color_b)[:3]
+    values = [round(start + (end - start) * ratio) for start, end in zip(rgb_a, rgb_b)]
+    return f"#{values[0]:02X}{values[1]:02X}{values[2]:02X}"
 
 
 def _relative_luminance(rgb: tuple[int, int, int]) -> float:

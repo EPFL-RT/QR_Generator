@@ -76,6 +76,8 @@ COLOR_SWATCHES = (
 STYLE_PRESETS = {
     "Classic": {
         "fill_color": "#000000",
+        "use_gradient": False,
+        "gradient_color": "#000000",
         "eye_color": "#000000",
         "back_color": "#FFFFFF",
         "module_style": ModuleStyle.SQUARE.value,
@@ -84,8 +86,22 @@ STYLE_PRESETS = {
         "border": 4,
         "logo_size": 25,
     },
-    "EPFL Red Eyes": {
+    "Print-safe": {
         "fill_color": "#000000",
+        "use_gradient": False,
+        "gradient_color": "#000000",
+        "eye_color": "#000000",
+        "back_color": "#FFFFFF",
+        "module_style": ModuleStyle.SQUARE.value,
+        "eye_style": EyeStyle.SQUARE.value,
+        "module_radius": 0,
+        "border": 4,
+        "logo_size": 20,
+    },
+    "Branded": {
+        "fill_color": "#000000",
+        "use_gradient": False,
+        "gradient_color": "#000000",
         "eye_color": "#D21F3C",
         "back_color": "#FFFFFF",
         "module_style": ModuleStyle.SQUARE.value,
@@ -96,6 +112,8 @@ STYLE_PRESETS = {
     },
     "Rounded": {
         "fill_color": "#111111",
+        "use_gradient": False,
+        "gradient_color": "#111111",
         "eye_color": "#D21F3C",
         "back_color": "#FFFFFF",
         "module_style": ModuleStyle.ROUNDED.value,
@@ -106,6 +124,8 @@ STYLE_PRESETS = {
     },
     "Dots": {
         "fill_color": "#111111",
+        "use_gradient": False,
+        "gradient_color": "#111111",
         "eye_color": "#D21F3C",
         "back_color": "#FFFFFF",
         "module_style": ModuleStyle.DOTS.value,
@@ -113,6 +133,42 @@ STYLE_PRESETS = {
         "module_radius": 50,
         "border": 4,
         "logo_size": 24,
+    },
+    "Minimal": {
+        "fill_color": "#1E252B",
+        "use_gradient": False,
+        "gradient_color": "#1E252B",
+        "eye_color": "#1E252B",
+        "back_color": "#FFFFFF",
+        "module_style": ModuleStyle.ROUNDED.value,
+        "eye_style": EyeStyle.ROUNDED.value,
+        "module_radius": 20,
+        "border": 4,
+        "logo_size": 22,
+    },
+    "Redline": {
+        "fill_color": "#111111",
+        "use_gradient": True,
+        "gradient_color": "#8B0014",
+        "eye_color": "#D21F3C",
+        "back_color": "#FFFFFF",
+        "module_style": ModuleStyle.ROUNDED.value,
+        "eye_style": EyeStyle.ROUNDED.value,
+        "module_radius": 35,
+        "border": 4,
+        "logo_size": 24,
+    },
+    "Gradient": {
+        "fill_color": "#05070A",
+        "use_gradient": True,
+        "gradient_color": "#005E8A",
+        "eye_color": "#D21F3C",
+        "back_color": "#FFFFFF",
+        "module_style": ModuleStyle.DOTS.value,
+        "eye_style": EyeStyle.CIRCLE.value,
+        "module_radius": 50,
+        "border": 4,
+        "logo_size": 22,
     },
 }
 
@@ -322,6 +378,8 @@ class QrGeneratorApp:
         self.box_size = tk.IntVar(value=24)
         self.border = tk.IntVar(value=4)
         self.fill_color = tk.StringVar(value="#000000")
+        self.use_gradient = tk.BooleanVar(value=False)
+        self.gradient_color = tk.StringVar(value="#005E8A")
         self.back_color = tk.StringVar(value="#FFFFFF")
         self.eye_color = tk.StringVar(value="#000000")
         self.module_style = tk.StringVar(value=ModuleStyle.SQUARE.value)
@@ -484,6 +542,7 @@ class QrGeneratorApp:
         self._section_title(parent, "QR Code").pack(anchor="w", padx=8, pady=(24, 12))
         self._content_row(parent)
         self._option_row(parent, "Preset", self.preset_name, list(STYLE_PRESETS), self._apply_preset)
+        self._preset_palette(parent)
         self._preset_actions(parent)
         self._option_row(parent, "Error Correction", self.error_correction, [level.value for level in ErrorCorrectionLevel])
         self._option_row(parent, "Module Style", self.module_style, [style.value for style in ModuleStyle])
@@ -491,6 +550,17 @@ class QrGeneratorApp:
         self._number_row(parent, "Box Size", self.box_size, 8, 64)
         self._number_row(parent, "Border", self.border, 1, 8)
         self._color_row(parent, "Fill Color", self.fill_color, "fill")
+        ctk.CTkCheckBox(
+            parent,
+            text="Use gradient modules",
+            variable=self.use_gradient,
+            fg_color=ACCENT,
+            hover_color=ACCENT_HOVER,
+            border_color=BORDER,
+            text_color=TEXT,
+            font=("Segoe UI", 14),
+        ).pack(anchor="w", padx=8, pady=(4, 8))
+        self._color_row(parent, "Gradient End", self.gradient_color, "gradient")
         self._color_row(parent, "Eye Color", self.eye_color, "eye")
         self._color_row(parent, "Background", self.back_color, "back")
         self._number_row(parent, "Roundness", self.module_radius, 0, 50)
@@ -675,6 +745,26 @@ class QrGeneratorApp:
             text_color=TEXT,
         ).grid(row=0, column=1, sticky="ew", padx=(6, 0))
 
+    def _preset_palette(self, parent: ctk.CTkFrame) -> None:
+        grid = ctk.CTkFrame(parent, fg_color=PANEL, corner_radius=0)
+        grid.pack(fill="x", padx=8, pady=(0, 10))
+        grid.grid_columnconfigure((0, 1, 2), weight=1)
+
+        for index, name in enumerate(STYLE_PRESETS):
+            ctk.CTkButton(
+                grid,
+                text=name,
+                command=lambda chosen=name: self._apply_preset(chosen),
+                height=34,
+                fg_color=FIELD,
+                hover_color="#3F4549",
+                border_color=BORDER,
+                border_width=1,
+                corner_radius=8,
+                text_color=TEXT,
+                font=("Segoe UI", 13),
+            ).grid(row=index // 3, column=index % 3, sticky="ew", padx=4, pady=4)
+
     def _export_actions(self, parent: ctk.CTkFrame) -> None:
         row = ctk.CTkFrame(parent, fg_color=PANEL, corner_radius=0)
         row.pack(fill="x", padx=8, pady=(0, 18))
@@ -822,6 +912,8 @@ class QrGeneratorApp:
             self.box_size,
             self.border,
             self.fill_color,
+            self.use_gradient,
+            self.gradient_color,
             self.back_color,
             self.eye_color,
             self.module_style,
@@ -838,6 +930,7 @@ class QrGeneratorApp:
 
         self.content.trace_add("write", lambda *_: self._sync_content_box())
         self.fill_color.trace_add("write", lambda *_: self._paint_swatch("fill", self.fill_color.get()))
+        self.gradient_color.trace_add("write", lambda *_: self._paint_swatch("gradient", self.gradient_color.get()))
         self.eye_color.trace_add("write", lambda *_: self._paint_swatch("eye", self.eye_color.get()))
         self.back_color.trace_add("write", lambda *_: self._paint_swatch("back", self.back_color.get()))
 
@@ -1001,6 +1094,7 @@ class QrGeneratorApp:
             box_size=self.box_size.get(),
             border=self.border.get(),
             fill_color=self.fill_color.get(),
+            gradient_color=self.gradient_color.get() if self.use_gradient.get() else "",
             back_color=self.back_color.get(),
             eye_color=self.eye_color.get(),
             module_style=ModuleStyle(self.module_style.get()),
@@ -1046,7 +1140,10 @@ class QrGeneratorApp:
         if not preset:
             return
 
+        self.preset_name.set(name)
         self.fill_color.set(str(preset["fill_color"]))
+        self.use_gradient.set(bool(preset.get("use_gradient", False)))
+        self.gradient_color.set(str(preset.get("gradient_color", preset["fill_color"])))
         self.eye_color.set(str(preset["eye_color"]))
         self.back_color.set(str(preset["back_color"]))
         self.module_style.set(str(preset["module_style"]))
@@ -1107,6 +1204,8 @@ class QrGeneratorApp:
                 "box_size": self.box_size.get(),
                 "border": self.border.get(),
                 "fill_color": self.fill_color.get(),
+                "use_gradient": self.use_gradient.get(),
+                "gradient_color": self.gradient_color.get(),
                 "eye_color": self.eye_color.get(),
                 "back_color": self.back_color.get(),
                 "module_style": self.module_style.get(),
@@ -1135,6 +1234,8 @@ class QrGeneratorApp:
         self.box_size.set(_int_between(settings, "box_size", 8, 64, self.box_size.get()))
         self.border.set(_int_between(settings, "border", 1, 8, self.border.get()))
         self.fill_color.set(_string(settings, "fill_color", self.fill_color.get()))
+        self.use_gradient.set(_bool(settings, "use_gradient", self.use_gradient.get()))
+        self.gradient_color.set(_string(settings, "gradient_color", self.gradient_color.get()))
         self.eye_color.set(_string(settings, "eye_color", self.eye_color.get()))
         self.back_color.set(_string(settings, "back_color", self.back_color.get()))
         self.module_style.set(_choice(settings, "module_style", ModuleStyle, self.module_style.get()))
