@@ -1,3 +1,4 @@
 qrcode[pil]
 Pillow
+customtkinter
 tomli ; python_version < "3.11"
