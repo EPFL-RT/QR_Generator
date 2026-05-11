@@ -17,7 +17,16 @@ except ImportError as exc:
     raise SystemExit("Missing dependency: run `python -m pip install -r requirements.txt` first.") from exc
 from PIL import Image, ImageColor
 
-from .renderer import ErrorCorrectionLevel, EyeStyle, LogoOptions, ModuleStyle, QrStyle, generate_qr, generate_qr_svg
+from .renderer import (
+    ErrorCorrectionLevel,
+    EyeStyle,
+    LogoOptions,
+    ModuleStyle,
+    QrStyle,
+    ScanQualityReport,
+    generate_qr,
+    generate_qr_svg,
+)
 
 
 DEFAULT_OUTPUT = Path("out/qr_with_logo.png")
@@ -37,10 +46,17 @@ ACCENT = "#2577B2"
 ACCENT_HOVER = "#1E669B"
 DANGER = "#D21F3C"
 DANGER_HOVER = "#B81731"
+SUCCESS = "#00A86B"
+WARNING = "#FFB000"
 PRESET_VERSION = 1
 PRESET_FILETYPES = (("QR preset", "*.qrpreset.json"), ("JSON", "*.json"), ("All files", "*.*"))
 PNG_FILETYPES = (("PNG image", "*.png"),)
 SVG_FILETYPES = (("SVG image", "*.svg"),)
+QUALITY_COLORS = {
+    "Excellent": SUCCESS,
+    "Good": WARNING,
+    "Risky": DANGER,
+}
 COLOR_SWATCHES = (
     "#000000",
     "#FFFFFF",
@@ -64,6 +80,8 @@ STYLE_PRESETS = {
         "module_style": ModuleStyle.SQUARE.value,
         "eye_style": EyeStyle.SQUARE.value,
         "module_radius": 0,
+        "border": 4,
+        "logo_size": 25,
     },
     "EPFL Red Eyes": {
         "fill_color": "#000000",
@@ -72,6 +90,8 @@ STYLE_PRESETS = {
         "module_style": ModuleStyle.SQUARE.value,
         "eye_style": EyeStyle.ROUNDED.value,
         "module_radius": 0,
+        "border": 4,
+        "logo_size": 25,
     },
     "Rounded": {
         "fill_color": "#111111",
@@ -80,6 +100,8 @@ STYLE_PRESETS = {
         "module_style": ModuleStyle.ROUNDED.value,
         "eye_style": EyeStyle.ROUNDED.value,
         "module_radius": 35,
+        "border": 4,
+        "logo_size": 25,
     },
     "Dots": {
         "fill_color": "#111111",
@@ -295,7 +317,7 @@ class QrGeneratorApp:
         self.content = tk.StringVar(value="https://www.epflracingteam.ch/en")
         self.error_correction = tk.StringVar(value=ErrorCorrectionLevel.H.value)
         self.box_size = tk.IntVar(value=24)
-        self.border = tk.IntVar(value=1)
+        self.border = tk.IntVar(value=4)
         self.fill_color = tk.StringVar(value="#000000")
         self.back_color = tk.StringVar(value="#FFFFFF")
         self.eye_color = tk.StringVar(value="#000000")
@@ -305,7 +327,7 @@ class QrGeneratorApp:
         self.preset_name = tk.StringVar(value="Classic")
         self.use_logo = tk.BooleanVar(value=DEFAULT_LOGO.exists())
         self.logo_path = tk.StringVar(value=str(DEFAULT_LOGO if DEFAULT_LOGO.exists() else ""))
-        self.logo_size = tk.IntVar(value=30)
+        self.logo_size = tk.IntVar(value=25)
         self.logo_padding_x = tk.IntVar(value=30)
         self.logo_padding_y = tk.IntVar(value=80)
         self.export_format = tk.StringVar(value=_settings_choice(self.app_settings, "export_format", EXPORT_FORMATS, "PNG"))
@@ -318,11 +340,16 @@ class QrGeneratorApp:
         self.preview_label: ctk.CTkLabel | None = None
         self.preview_card: ctk.CTkFrame | None = None
         self.preview_photo: ctk.CTkImage | None = None
+        self.status_label: ctk.CTkLabel | None = None
+        self.quality_badge: ctk.CTkLabel | None = None
+        self.quality_title: ctk.CTkLabel | None = None
+        self.quality_details: ctk.CTkLabel | None = None
         self.latest_image: Image.Image | None = None
         self.after_id: str | None = None
         self.color_swatches: dict[str, ctk.CTkFrame] = {}
         self.color_buttons: dict[str, ctk.CTkButton] = {}
         self.export_button: ctk.CTkButton | None = None
+        self.syncing_logo_error_correction = False
 
         self._build_ui()
         self._bind_updates()
@@ -381,14 +408,28 @@ class QrGeneratorApp:
             sticky="w",
         )
 
-        status = ctk.CTkLabel(
+        self.quality_badge = ctk.CTkLabel(
+            header,
+            text="Ready",
+            font=("Segoe UI Semibold", 13),
+            text_color=TEXT,
+            fg_color=FIELD,
+            corner_radius=14,
+            padx=12,
+            pady=4,
+        )
+        self.quality_badge.grid(row=0, column=1, sticky="e", padx=(14, 0))
+
+        self.status_label = ctk.CTkLabel(
             header,
             textvariable=self.status,
             font=("Segoe UI", 13),
             text_color=MUTED,
-            anchor="e",
+            anchor="w",
+            justify="left",
+            wraplength=520,
         )
-        status.grid(row=0, column=1, sticky="e")
+        self.status_label.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(7, 0))
 
         preview_outer = ctk.CTkFrame(panel, fg_color=PANEL, corner_radius=0)
         preview_outer.grid(row=1, column=0, sticky="nsew", padx=22, pady=(8, 22))
@@ -408,6 +449,30 @@ class QrGeneratorApp:
             fg_color="#242424",
         )
         self.preview_label.grid(row=0, column=0, sticky="nsew", padx=24, pady=24)
+
+        quality_panel = ctk.CTkFrame(panel, fg_color="#242424", corner_radius=8)
+        quality_panel.grid(row=2, column=0, sticky="ew", padx=22, pady=(0, 22))
+        quality_panel.grid_columnconfigure(0, weight=1)
+
+        self.quality_title = ctk.CTkLabel(
+            quality_panel,
+            text="Scan safety",
+            font=("Segoe UI Semibold", 15),
+            text_color=TEXT,
+            anchor="w",
+        )
+        self.quality_title.grid(row=0, column=0, sticky="ew", padx=16, pady=(14, 2))
+
+        self.quality_details = ctk.CTkLabel(
+            quality_panel,
+            text="Waiting for preview.",
+            font=("Segoe UI", 13),
+            text_color=MUTED,
+            anchor="w",
+            justify="left",
+            wraplength=520,
+        )
+        self.quality_details.grid(row=1, column=0, sticky="ew", padx=16, pady=(0, 14))
 
     def _build_qr_section(self, parent: ctk.CTkFrame) -> None:
         self._section_title(parent, "QR Code").pack(anchor="w", padx=8, pady=(24, 12))
@@ -723,7 +788,16 @@ class QrGeneratorApp:
 
         if self.preview_card:
             self.preview_card.bind("<Configure>", lambda _: self._schedule_preview())
+        if self.preview_label:
+            self.preview_label.bind("<Configure>", lambda _: self._schedule_preview())
 
+        self.use_logo.trace_add("write", lambda *_: self._ensure_logo_error_correction())
+        self.logo_path.trace_add("write", lambda *_: self._ensure_logo_error_correction())
+        self.error_correction.trace_add("write", lambda *_: self._ensure_logo_error_correction())
+
+        self.export_format.trace_add("write", lambda *_: self._schedule_preview())
+        self.output_size.trace_add("write", lambda *_: self._schedule_preview())
+        self.custom_output_size.trace_add("write", lambda *_: self._schedule_preview())
         self.output_size.trace_add("write", lambda *_: self._save_app_settings())
         self.custom_output_size.trace_add("write", lambda *_: self._save_app_settings())
         self.transparent_background.trace_add("write", lambda *_: self._save_app_settings())
@@ -736,7 +810,7 @@ class QrGeneratorApp:
     def _render_preview(self) -> None:
         self.after_id = None
         try:
-            result = generate_qr(self._style(), self._logo())
+            result = generate_qr(self._style(), self._logo(), output_size=self._quality_output_size())
         except Exception as exc:
             self.latest_image = None
             self.status.set(str(exc))
@@ -744,30 +818,69 @@ class QrGeneratorApp:
 
         self.latest_image = result.image
         self._draw_preview(result.image)
-
-        errors = [item.text for item in result.validation if item.level == "error"]
-        warnings = [item.text for item in result.validation if item.level == "warning"]
-        if errors:
-            self.status.set(errors[0])
-        elif warnings:
-            self.status.set(warnings[0])
-        else:
-            self.status.set("Looks good for export.")
+        self._update_quality(result.quality)
 
     def _draw_preview(self, image: Image.Image) -> None:
         if self.preview_label is None or self.preview_card is None:
             return
 
-        card_w = max(320, self.preview_card.winfo_width())
-        card_h = max(320, self.preview_card.winfo_height())
-        preview = image.copy()
-        preview.thumbnail((card_w - 96, card_h - 96), Image.Resampling.LANCZOS)
+        viewport_w = self.preview_label.winfo_width()
+        viewport_h = self.preview_label.winfo_height()
+        if viewport_w <= 80 or viewport_h <= 80:
+            self.root.after(80, lambda: self._draw_preview(image))
+            return
 
-        canvas = Image.new("RGBA", (preview.width + 44, preview.height + 44), (255, 255, 255, 255))
-        canvas.alpha_composite(preview.convert("RGBA"), (22, 22))
+        canvas_limit = max(96, int(min(viewport_w, viewport_h) * 0.84))
+        padding = max(10, min(18, canvas_limit // 14))
+        preview_limit = max(64, canvas_limit - padding * 2)
+
+        preview = image.copy()
+        preview.thumbnail((preview_limit, preview_limit), Image.Resampling.LANCZOS)
+
+        canvas = Image.new("RGBA", (preview.width + padding * 2, preview.height + padding * 2), (255, 255, 255, 255))
+        canvas.alpha_composite(preview.convert("RGBA"), (padding, padding))
         canvas_rgb = canvas.convert("RGB")
         self.preview_photo = ctk.CTkImage(light_image=canvas_rgb, dark_image=canvas_rgb, size=canvas_rgb.size)
         self.preview_label.configure(image=self.preview_photo, text="")
+
+    def _update_quality(self, quality: ScanQualityReport) -> None:
+        color = QUALITY_COLORS.get(quality.rating, FIELD)
+        if self.quality_badge is not None:
+            text_color = "#111111" if quality.rating in {"Excellent", "Good"} else "#FFFFFF"
+            self.quality_badge.configure(
+                text=f"{quality.rating} {quality.score}/100",
+                fg_color=color,
+                text_color=text_color,
+            )
+
+        if self.quality_title is not None:
+            self.quality_title.configure(
+                text=(
+                    f"Scan safety - version {quality.qr_version} - "
+                    f"{quality.module_count} modules - {quality.module_pixels:.1f} px/module"
+                )
+            )
+
+        errors = [item.text for item in quality.messages if item.level == "error"]
+        warnings = [item.text for item in quality.messages if item.level == "warning"]
+        if errors:
+            self.status.set(errors[0])
+        elif warnings:
+            self.status.set(warnings[0])
+        else:
+            self.status.set("Excellent scan safety for the current settings.")
+
+        if self.quality_details is not None:
+            if quality.messages:
+                details = "\n".join(f"- {message.text}" for message in quality.messages[:4])
+            else:
+                details = "No scan risks detected for the current settings."
+            if len(quality.messages) > 4:
+                details += f"\n- {len(quality.messages) - 4} more checks need attention."
+            wrap = max(280, (self.preview_card.winfo_width() if self.preview_card else 560) - 72)
+            self.quality_details.configure(text=details, wraplength=wrap)
+            if self.status_label is not None:
+                self.status_label.configure(wraplength=wrap)
 
     def _style(self) -> QrStyle:
         return QrStyle(
@@ -792,6 +905,21 @@ class QrGeneratorApp:
             bg_padding_x=self.logo_padding_x.get(),
             bg_padding_y=self.logo_padding_y.get(),
         )
+
+    def _ensure_logo_error_correction(self) -> None:
+        if self.syncing_logo_error_correction:
+            return
+        if not self.use_logo.get() or not self.logo_path.get().strip():
+            return
+        if self.error_correction.get() == ErrorCorrectionLevel.H.value:
+            return
+
+        self.syncing_logo_error_correction = True
+        try:
+            self.error_correction.set(ErrorCorrectionLevel.H.value)
+            self.status.set("Using H error correction for logo safety.")
+        finally:
+            self.syncing_logo_error_correction = False
 
     def _paint_swatch(self, key: str, color: str) -> None:
         swatch = self.color_swatches.get(key)
@@ -961,7 +1089,7 @@ class QrGeneratorApp:
             self._save_app_settings()
 
     def _export(self) -> None:
-        result = generate_qr(self._style(), self._logo())
+        result = generate_qr(self._style(), self._logo(), output_size=self._quality_output_size())
         errors = [item.text for item in result.validation if item.level == "error"]
         if errors:
             messagebox.showerror("Cannot export", errors[0], parent=self.root)
@@ -992,7 +1120,7 @@ class QrGeneratorApp:
         self.status.set(f"Saved {out_path.name}")
 
     def _copy_png(self) -> None:
-        result = generate_qr(self._style(), self._logo())
+        result = generate_qr(self._style(), self._logo(), output_size=self._selected_fixed_output_size())
         errors = [item.text for item in result.validation if item.level == "error"]
         if errors:
             messagebox.showerror("Cannot copy", errors[0], parent=self.root)
@@ -1026,12 +1154,20 @@ class QrGeneratorApp:
         return export
 
     def _selected_export_size(self, original_size: int) -> int:
+        return self._selected_fixed_output_size() or original_size
+
+    def _selected_fixed_output_size(self) -> int | None:
         selection = self.output_size.get()
         if selection == "Original":
-            return original_size
+            return None
         if selection == "Custom":
             return self.custom_output_size.get()
         return int(selection)
+
+    def _quality_output_size(self) -> int | None:
+        if self.export_format.get() != "PNG":
+            return None
+        return self._selected_fixed_output_size()
 
     def _output_path(self) -> Path:
         return _with_suffix(Path(self.output_path.get().strip() or DEFAULT_OUTPUT), _export_suffix(self.export_format.get()))

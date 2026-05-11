@@ -6,7 +6,6 @@ import html
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Iterable
 
 import qrcode
 from PIL import Image, ImageColor, ImageDraw
@@ -44,7 +43,7 @@ class QrStyle:
     content: str
     error_correction: ErrorCorrectionLevel = ErrorCorrectionLevel.H
     box_size: int = 24
-    border: int = 1
+    border: int = 4
     fill_color: str = "#000000"
     back_color: str = "#FFFFFF"
     eye_color: str = "#000000"
@@ -68,20 +67,40 @@ class ValidationMessage:
 
 
 @dataclass(frozen=True)
+class ScanQualityReport:
+    rating: str
+    score: int
+    module_count: int
+    qr_version: int
+    output_size: int
+    module_pixels: float
+    messages: tuple[ValidationMessage, ...]
+
+
+@dataclass(frozen=True)
 class QrRenderResult:
     image: Image.Image
     validation: tuple[ValidationMessage, ...]
+    quality: ScanQualityReport
 
 
-def generate_qr(style: QrStyle, logo: LogoOptions | None = None) -> QrRenderResult:
-    validation = tuple(_validate(style, logo))
+LOGO_RATIO_LIMITS = {
+    ErrorCorrectionLevel.L: 0.10,
+    ErrorCorrectionLevel.M: 0.15,
+    ErrorCorrectionLevel.Q: 0.22,
+    ErrorCorrectionLevel.H: 0.28,
+}
+
+
+def generate_qr(style: QrStyle, logo: LogoOptions | None = None, *, output_size: int | None = None) -> QrRenderResult:
     matrix = _qr_matrix(style)
+    quality = assess_scan_quality(style, logo, matrix=matrix, output_size=output_size)
     image = _draw_matrix(matrix, style)
 
-    if logo and logo.path:
+    if logo and logo.path and logo.path.exists():
         image = _apply_logo(image, logo, style.back_color)
 
-    return QrRenderResult(image=image, validation=validation)
+    return QrRenderResult(image=image, validation=quality.messages, quality=quality)
 
 
 def generate_qr_svg(
@@ -134,35 +153,103 @@ def _qr_matrix(style: QrStyle) -> list[list[bool]]:
     return qr.get_matrix()
 
 
-def _validate(style: QrStyle, logo: LogoOptions | None) -> Iterable[ValidationMessage]:
+def assess_scan_quality(
+    style: QrStyle,
+    logo: LogoOptions | None = None,
+    *,
+    matrix: list[list[bool]] | None = None,
+    output_size: int | None = None,
+) -> ScanQualityReport:
+    matrix = matrix if matrix is not None else _qr_matrix(style)
+    modules = len(matrix)
+    core_modules = max(0, modules - style.border * 2)
+    version = max(1, round((core_modules - 17) / 4)) if core_modules else 0
+    raster_size = output_size or modules * style.box_size
+    module_pixels = raster_size / modules if modules else 0
+    messages: list[ValidationMessage] = []
+    score = 100
+
+    def add_error(text: str) -> None:
+        nonlocal score
+        messages.append(ValidationMessage("error", text))
+        score = 0
+
+    def add_warning(text: str, deduction: int) -> None:
+        nonlocal score
+        messages.append(ValidationMessage("warning", text))
+        score -= deduction
+
     if not style.content.strip():
-        yield ValidationMessage("error", "Add text or a URL before exporting.")
+        add_error("Add text or a URL before exporting.")
 
     if style.border < 4:
-        yield ValidationMessage("warning", "A quiet zone of at least 4 modules scans more reliably.")
+        deduction = 24 if style.border <= 1 else 16
+        add_warning("Set Border to 4 or higher so scanners can separate the QR code from its surroundings.", deduction)
 
-    if style.box_size < 8:
-        yield ValidationMessage("warning", "Small module sizes can make exported QR codes hard to scan.")
+    if module_pixels < 6:
+        add_warning("Selected PNG export size is too small; use at least 8 pixels per QR module.", 22)
+    elif module_pixels < 8:
+        add_warning("Selected PNG export size is tight; larger exports scan better in print.", 12)
 
-    if _contrast_ratio(style.fill_color, style.back_color) < 4.5:
-        yield ValidationMessage("warning", "Increase color contrast for better scanning.")
+    fill_contrast = _contrast_ratio(style.fill_color, style.back_color)
+    if fill_contrast < 3:
+        add_warning("Use much stronger contrast between Fill Color and Background.", 30)
+    elif fill_contrast < 4.5:
+        add_warning("Increase contrast between Fill Color and Background for better scanning.", 18)
 
-    if _contrast_ratio(_eye_color(style), style.back_color) < 4.5:
-        yield ValidationMessage("warning", "Increase eye contrast for better scanner detection.")
+    eye_contrast = _contrast_ratio(_eye_color(style), style.back_color)
+    if eye_contrast < 3:
+        add_warning("Use much stronger contrast between Eye Color and Background.", 28)
+    elif eye_contrast < 4.5:
+        add_warning("Increase Eye Color contrast so scanners can lock onto the finder eyes.", 16)
 
-    if style.module_style != ModuleStyle.SQUARE and style.box_size < 16:
-        yield ValidationMessage("warning", "Styled modules look and scan better at module sizes of 16 px or more.")
+    if style.module_style != ModuleStyle.SQUARE and module_pixels < 16:
+        add_warning("Styled modules need at least 16 pixels per module for cleaner edges.", 10)
 
     if style.module_style == ModuleStyle.DOTS and style.border < 4:
-        yield ValidationMessage("warning", "Dot modules need a wider quiet zone for reliable scanning.")
+        add_warning("Dot modules need Border 4 or higher for reliable scanning.", 8)
+
+    if version >= 18:
+        add_warning("The payload is very dense; shorten the text or export a larger QR code.", 22)
+    elif version >= 12:
+        add_warning("The payload is getting dense; larger exports will scan more reliably.", 10)
 
     if logo and logo.path:
         if not logo.path.exists():
-            yield ValidationMessage("error", f"Logo not found: {logo.path}")
-        if logo.max_size_ratio > 0.25 and style.error_correction != ErrorCorrectionLevel.H:
-            yield ValidationMessage("warning", "Large logos should use H error correction.")
+            add_error(f"Logo not found: {logo.path}")
+        if style.error_correction != ErrorCorrectionLevel.H:
+            add_warning("Use H error correction when a centered logo is enabled.", 14)
+
+        safe_ratio = LOGO_RATIO_LIMITS[style.error_correction]
+        if logo.max_size_ratio > safe_ratio:
+            recommended = round(safe_ratio * 100)
+            deduction = 24 if logo.max_size_ratio > safe_ratio + 0.05 else 14
+            add_warning(
+                f"Keep Logo Max Size Ratio at {recommended}% or less for {style.error_correction.value} error correction.",
+                deduction,
+            )
         if logo.max_size_ratio > 0.30:
-            yield ValidationMessage("warning", "Logos above 30% of the QR width may not scan reliably.")
+            add_warning("Logos above 30% of the QR width may not scan reliably.", 22)
+
+    score = max(0, min(100, score))
+    has_errors = any(message.level == "error" for message in messages)
+    has_warnings = any(message.level == "warning" for message in messages)
+    if has_errors or score < 70:
+        rating = "Risky"
+    elif has_warnings or score < 92:
+        rating = "Good"
+    else:
+        rating = "Excellent"
+
+    return ScanQualityReport(
+        rating=rating,
+        score=score,
+        module_count=modules,
+        qr_version=version,
+        output_size=raster_size,
+        module_pixels=module_pixels,
+        messages=tuple(messages),
+    )
 
 
 def _draw_matrix(matrix: list[list[bool]], style: QrStyle) -> Image.Image:

@@ -42,7 +42,8 @@ GitHub Actions also builds the executable automatically on pushes to `dev`, pull
 - Custom foreground, eye, and background colors
 - Optional centered logo
 - Error correction controls
-- Quiet-zone and scan-safety warnings
+- Live scan-safety score with actionable quality warnings
+- Contrast, quiet-zone, logo-size, payload-density, and PNG export-size checks
 - PNG and SVG export with a file picker
 - Export size presets and custom sizing
 - Transparent background option
@@ -55,3 +56,4 @@ GitHub Actions also builds the executable automatically on pushes to `dev`, pull
 - Use high color contrast between the QR modules and background.
 - Use `H` error correction when adding a logo.
 - Keep centered logos around `20-25%` of the QR width.
+- Export PNGs large enough to keep each module at roughly `8 px` or more.

@@ -5,7 +5,9 @@ from .renderer import (
     ModuleStyle,
     QrRenderResult,
     QrStyle,
+    ScanQualityReport,
     ValidationMessage,
+    assess_scan_quality,
     generate_qr,
     generate_qr_svg,
 )
@@ -17,7 +19,9 @@ __all__ = [
     "ModuleStyle",
     "QrRenderResult",
     "QrStyle",
+    "ScanQualityReport",
     "ValidationMessage",
+    "assess_scan_quality",
     "generate_qr",
     "generate_qr_svg",
 ]
