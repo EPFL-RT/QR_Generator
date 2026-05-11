@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import ctypes
+from ctypes import wintypes
+from io import BytesIO
 import json
+import os
 from pathlib import Path
 import sys
 from typing import Any, Callable
@@ -13,11 +17,14 @@ except ImportError as exc:
     raise SystemExit("Missing dependency: run `python -m pip install -r requirements.txt` first.") from exc
 from PIL import Image, ImageColor
 
-from .renderer import ErrorCorrectionLevel, EyeStyle, LogoOptions, ModuleStyle, QrStyle, generate_qr
+from .renderer import ErrorCorrectionLevel, EyeStyle, LogoOptions, ModuleStyle, QrStyle, generate_qr, generate_qr_svg
 
 
 DEFAULT_OUTPUT = Path("out/qr_with_logo.png")
 DEFAULT_LOGO = Path(getattr(sys, "_MEIPASS", Path.cwd())) / "assets" / "logo.png"
+OUTPUT_SIZE_PRESETS = ("Original", "512", "1024", "2048", "4096", "Custom")
+EXPORT_FORMATS = ("PNG", "SVG")
+APP_SETTINGS_PATH = Path(os.getenv("APPDATA", Path.home())) / "QR Code Generator" / "settings.json"
 
 APP_BG = "#202020"
 PANEL = "#2B2B2B"
@@ -32,6 +39,8 @@ DANGER = "#D21F3C"
 DANGER_HOVER = "#B81731"
 PRESET_VERSION = 1
 PRESET_FILETYPES = (("QR preset", "*.qrpreset.json"), ("JSON", "*.json"), ("All files", "*.*"))
+PNG_FILETYPES = (("PNG image", "*.png"),)
+SVG_FILETYPES = (("SVG image", "*.svg"),)
 COLOR_SWATCHES = (
     "#000000",
     "#FFFFFF",
@@ -275,6 +284,7 @@ class QrGeneratorApp:
     def __init__(self) -> None:
         ctk.set_appearance_mode("dark")
         ctk.set_default_color_theme("blue")
+        self.app_settings = _load_app_settings()
 
         self.root = ctk.CTk()
         self.root.title("QR Code Generator")
@@ -298,7 +308,11 @@ class QrGeneratorApp:
         self.logo_size = tk.IntVar(value=30)
         self.logo_padding_x = tk.IntVar(value=30)
         self.logo_padding_y = tk.IntVar(value=80)
-        self.output_path = tk.StringVar(value=str(DEFAULT_OUTPUT))
+        self.export_format = tk.StringVar(value=_settings_choice(self.app_settings, "export_format", EXPORT_FORMATS, "PNG"))
+        self.output_size = tk.StringVar(value=_settings_choice(self.app_settings, "output_size", OUTPUT_SIZE_PRESETS, "Original"))
+        self.custom_output_size = tk.IntVar(value=_settings_int(self.app_settings, "custom_output_size", 256, 8192, 1024))
+        self.transparent_background = tk.BooleanVar(value=bool(self.app_settings.get("transparent_background", False)))
+        self.output_path = tk.StringVar(value=str(self.app_settings.get("last_output_path") or DEFAULT_OUTPUT))
         self.status = tk.StringVar(value="Ready")
 
         self.preview_label: ctk.CTkLabel | None = None
@@ -308,9 +322,11 @@ class QrGeneratorApp:
         self.after_id: str | None = None
         self.color_swatches: dict[str, ctk.CTkFrame] = {}
         self.color_buttons: dict[str, ctk.CTkButton] = {}
+        self.export_button: ctk.CTkButton | None = None
 
         self._build_ui()
         self._bind_updates()
+        self._sync_output_extension()
         self._schedule_preview()
 
     def run(self) -> None:
@@ -427,8 +443,21 @@ class QrGeneratorApp:
 
     def _build_export_section(self, parent: ctk.CTkFrame) -> None:
         self._section_title(parent, "Export").pack(anchor="w", padx=8, pady=(24, 12))
+        self._option_row(parent, "Format", self.export_format, list(EXPORT_FORMATS), self._on_export_format_change)
+        self._option_row(parent, "Size", self.output_size, list(OUTPUT_SIZE_PRESETS))
+        self._number_row(parent, "Custom Size", self.custom_output_size, 256, 8192)
+        ctk.CTkCheckBox(
+            parent,
+            text="Transparent background",
+            variable=self.transparent_background,
+            fg_color=ACCENT,
+            hover_color=ACCENT_HOVER,
+            border_color=BORDER,
+            text_color=TEXT,
+            font=("Segoe UI", 14),
+        ).pack(anchor="w", padx=8, pady=(5, 10))
         self._file_row(parent, "Output Path", self.output_path, self._choose_output)
-        ctk.CTkButton(
+        self.export_button = ctk.CTkButton(
             parent,
             text="Export PNG",
             command=self._export,
@@ -438,7 +467,9 @@ class QrGeneratorApp:
             corner_radius=8,
             font=("Segoe UI Semibold", 15),
             text_color="#FFFFFF",
-        ).pack(fill="x", padx=8, pady=(12, 18))
+        )
+        self.export_button.pack(fill="x", padx=8, pady=(12, 10))
+        self._export_actions(parent)
 
     def _section_title(self, parent: ctk.CTkFrame, text: str) -> ctk.CTkLabel:
         return ctk.CTkLabel(parent, text=text, font=("Segoe UI Semibold", 17), text_color=TEXT)
@@ -522,6 +553,37 @@ class QrGeneratorApp:
             height=38,
             fg_color=ACCENT,
             hover_color=ACCENT_HOVER,
+            corner_radius=8,
+            text_color=TEXT,
+        ).grid(row=0, column=1, sticky="ew", padx=(6, 0))
+
+    def _export_actions(self, parent: ctk.CTkFrame) -> None:
+        row = ctk.CTkFrame(parent, fg_color=PANEL, corner_radius=0)
+        row.pack(fill="x", padx=8, pady=(0, 18))
+        row.grid_columnconfigure((0, 1), weight=1)
+
+        ctk.CTkButton(
+            row,
+            text="Copy PNG",
+            command=self._copy_png,
+            height=38,
+            fg_color=FIELD,
+            hover_color="#3F4549",
+            border_color=BORDER,
+            border_width=1,
+            corner_radius=8,
+            text_color=TEXT,
+        ).grid(row=0, column=0, sticky="ew", padx=(0, 6))
+
+        ctk.CTkButton(
+            row,
+            text="Open Folder",
+            command=self._open_output_folder,
+            height=38,
+            fg_color=FIELD,
+            hover_color="#3F4549",
+            border_color=BORDER,
+            border_width=1,
             corner_radius=8,
             text_color=TEXT,
         ).grid(row=0, column=1, sticky="ew", padx=(6, 0))
@@ -661,6 +723,10 @@ class QrGeneratorApp:
 
         if self.preview_card:
             self.preview_card.bind("<Configure>", lambda _: self._schedule_preview())
+
+        self.output_size.trace_add("write", lambda *_: self._save_app_settings())
+        self.custom_output_size.trace_add("write", lambda *_: self._save_app_settings())
+        self.transparent_background.trace_add("write", lambda *_: self._save_app_settings())
 
     def _schedule_preview(self) -> None:
         if self.after_id:
@@ -872,16 +938,27 @@ class QrGeneratorApp:
             self.logo_path.set(path)
             self.use_logo.set(True)
 
+    def _on_export_format_change(self, _: str | None = None) -> None:
+        self._sync_output_extension()
+        self._save_app_settings()
+
     def _choose_output(self) -> None:
+        export_format = self.export_format.get()
+        suffix = _export_suffix(export_format)
+        current = self._output_path()
+        initial_dir = current.parent if current.parent != Path(".") else Path(self.app_settings.get("last_export_dir", "."))
+        filetypes = SVG_FILETYPES if export_format == "SVG" else PNG_FILETYPES
         path = filedialog.asksaveasfilename(
             parent=self.root,
             title="Export QR code",
-            defaultextension=".png",
-            filetypes=(("PNG image", "*.png"),),
-            initialfile="qr_code.png",
+            defaultextension=suffix,
+            filetypes=filetypes,
+            initialdir=str(initial_dir),
+            initialfile=current.with_suffix(suffix).name,
         )
         if path:
-            self.output_path.set(path)
+            self.output_path.set(str(_with_suffix(Path(path), suffix)))
+            self._save_app_settings()
 
     def _export(self) -> None:
         result = generate_qr(self._style(), self._logo())
@@ -890,10 +967,92 @@ class QrGeneratorApp:
             messagebox.showerror("Cannot export", errors[0], parent=self.root)
             return
 
-        out_path = Path(self.output_path.get().strip() or DEFAULT_OUTPUT)
+        out_path = self._output_path()
+        if out_path.exists() and not messagebox.askyesno(
+            "Overwrite file?",
+            f"{out_path.name} already exists. Replace it?",
+            parent=self.root,
+        ):
+            return
+
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        result.image.save(out_path)
-        self.status.set(f"Saved {out_path}")
+        if self.export_format.get() == "SVG":
+            svg = generate_qr_svg(
+                self._style(),
+                self._logo(),
+                transparent_background=self.transparent_background.get(),
+                display_size=self._selected_export_size(result.image.size[0]),
+            )
+            out_path.write_text(svg, encoding="utf-8")
+        else:
+            image = self._prepared_export_image(result.image)
+            image.save(out_path)
+
+        self._save_app_settings()
+        self.status.set(f"Saved {out_path.name}")
+
+    def _copy_png(self) -> None:
+        result = generate_qr(self._style(), self._logo())
+        errors = [item.text for item in result.validation if item.level == "error"]
+        if errors:
+            messagebox.showerror("Cannot copy", errors[0], parent=self.root)
+            return
+
+        image = self._prepared_export_image(result.image)
+        try:
+            _copy_image_to_clipboard(image)
+        except OSError as exc:
+            messagebox.showerror("Could not copy image", str(exc), parent=self.root)
+            return
+
+        self.status.set("Copied PNG image to clipboard.")
+
+    def _open_output_folder(self) -> None:
+        folder = self._output_path().parent
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+            os.startfile(folder)
+        except OSError as exc:
+            messagebox.showerror("Could not open folder", str(exc), parent=self.root)
+
+    def _prepared_export_image(self, image: Image.Image) -> Image.Image:
+        export = image.convert("RGBA") if self.transparent_background.get() else image.convert("RGB")
+        if self.transparent_background.get():
+            export = _make_color_transparent(export, self.back_color.get())
+
+        size = self._selected_export_size(export.size[0])
+        if size and size != export.size[0]:
+            export = export.resize((size, size), Image.Resampling.LANCZOS)
+        return export
+
+    def _selected_export_size(self, original_size: int) -> int:
+        selection = self.output_size.get()
+        if selection == "Original":
+            return original_size
+        if selection == "Custom":
+            return self.custom_output_size.get()
+        return int(selection)
+
+    def _output_path(self) -> Path:
+        return _with_suffix(Path(self.output_path.get().strip() or DEFAULT_OUTPUT), _export_suffix(self.export_format.get()))
+
+    def _sync_output_extension(self) -> None:
+        path = self._output_path()
+        self.output_path.set(str(path))
+        if self.export_button is not None:
+            self.export_button.configure(text=f"Export {self.export_format.get()}")
+
+    def _save_app_settings(self) -> None:
+        output_path = self._output_path()
+        self.app_settings = {
+            "last_output_path": str(output_path),
+            "last_export_dir": str(output_path.parent),
+            "export_format": self.export_format.get(),
+            "output_size": self.output_size.get(),
+            "custom_output_size": self.custom_output_size.get(),
+            "transparent_background": self.transparent_background.get(),
+        }
+        _save_app_settings(self.app_settings)
 
 
 def main() -> None:
@@ -905,6 +1064,120 @@ def _preset_filename(name: str) -> str:
     safe = "".join(character.lower() if character.isalnum() else "-" for character in name.strip())
     safe = "-".join(part for part in safe.split("-") if part)
     return f"{safe or 'qr-preset'}.qrpreset.json"
+
+
+def _load_app_settings() -> dict[str, object]:
+    try:
+        data = json.loads(APP_SETTINGS_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _save_app_settings(settings: dict[str, object]) -> None:
+    try:
+        APP_SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        APP_SETTINGS_PATH.write_text(json.dumps(settings, indent=2), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _settings_choice(settings: dict[str, object], key: str, allowed: tuple[str, ...], default: str) -> str:
+    value = str(settings.get(key, default))
+    return value if value in allowed else default
+
+
+def _settings_int(settings: dict[str, object], key: str, minimum: int, maximum: int, default: int) -> int:
+    try:
+        value = round(float(settings.get(key, default)))
+    except (TypeError, ValueError):
+        return default
+    return max(minimum, min(maximum, value))
+
+
+def _export_suffix(export_format: str) -> str:
+    return ".svg" if export_format == "SVG" else ".png"
+
+
+def _with_suffix(path: Path, suffix: str) -> Path:
+    return path if path.suffix.lower() == suffix else path.with_suffix(suffix)
+
+
+def _make_color_transparent(image: Image.Image, color: str) -> Image.Image:
+    transparent = image.convert("RGBA")
+    red, green, blue = ImageColor.getrgb(color)[:3]
+    pixels = []
+    for pixel_red, pixel_green, pixel_blue, pixel_alpha in transparent.getdata():
+        distance = abs(pixel_red - red) + abs(pixel_green - green) + abs(pixel_blue - blue)
+        if distance <= 24:
+            pixels.append((pixel_red, pixel_green, pixel_blue, 0))
+        else:
+            pixels.append((pixel_red, pixel_green, pixel_blue, pixel_alpha))
+    transparent.putdata(pixels)
+    return transparent
+
+
+def _copy_image_to_clipboard(image: Image.Image) -> None:
+    if sys.platform != "win32":
+        raise OSError("Copying images is currently supported on Windows only.")
+
+    image_for_clipboard = image.convert("RGBA")
+    if image_for_clipboard.getchannel("A").getextrema()[0] < 255:
+        background = Image.new("RGB", image_for_clipboard.size, "#FFFFFF")
+        background.paste(image_for_clipboard, mask=image_for_clipboard.getchannel("A"))
+        image_for_clipboard = background
+    else:
+        image_for_clipboard = image_for_clipboard.convert("RGB")
+
+    output = BytesIO()
+    image_for_clipboard.save(output, "BMP")
+    data = output.getvalue()[14:]
+    output.close()
+
+    user32 = ctypes.windll.user32
+    kernel32 = ctypes.windll.kernel32
+    user32.OpenClipboard.argtypes = [wintypes.HWND]
+    user32.OpenClipboard.restype = wintypes.BOOL
+    user32.EmptyClipboard.restype = wintypes.BOOL
+    user32.SetClipboardData.argtypes = [wintypes.UINT, wintypes.HANDLE]
+    user32.SetClipboardData.restype = wintypes.HANDLE
+    user32.CloseClipboard.restype = wintypes.BOOL
+    kernel32.GlobalAlloc.argtypes = [wintypes.UINT, ctypes.c_size_t]
+    kernel32.GlobalAlloc.restype = wintypes.HGLOBAL
+    kernel32.GlobalLock.argtypes = [wintypes.HGLOBAL]
+    kernel32.GlobalLock.restype = ctypes.c_void_p
+    kernel32.GlobalUnlock.argtypes = [wintypes.HGLOBAL]
+    kernel32.GlobalUnlock.restype = wintypes.BOOL
+    kernel32.GlobalFree.argtypes = [wintypes.HGLOBAL]
+    kernel32.GlobalFree.restype = wintypes.HGLOBAL
+    cf_dib = 8
+    gmem_moveable = 0x0002
+    gmem_zeroinit = 0x0040
+    handle = None
+
+    if not user32.OpenClipboard(None):
+        raise OSError("Could not open the Windows clipboard.")
+
+    try:
+        user32.EmptyClipboard()
+        handle = kernel32.GlobalAlloc(gmem_moveable | gmem_zeroinit, len(data))
+        if not handle:
+            raise OSError("Could not allocate clipboard memory.")
+
+        pointer = kernel32.GlobalLock(handle)
+        if not pointer:
+            raise OSError("Could not lock clipboard memory.")
+
+        ctypes.memmove(ctypes.c_void_p(pointer), data, len(data))
+        kernel32.GlobalUnlock(handle)
+
+        if not user32.SetClipboardData(cf_dib, handle):
+            raise OSError("Could not write image data to the clipboard.")
+        handle = None
+    finally:
+        user32.CloseClipboard()
+        if handle:
+            kernel32.GlobalFree(handle)
 
 
 def _normalize_hex_color(value: str, default: str = "#000000") -> str:

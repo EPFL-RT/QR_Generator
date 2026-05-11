@@ -7,6 +7,7 @@ from .renderer import (
     QrStyle,
     ValidationMessage,
     generate_qr,
+    generate_qr_svg,
 )
 
 __all__ = [
@@ -18,4 +19,5 @@ __all__ = [
     "QrStyle",
     "ValidationMessage",
     "generate_qr",
+    "generate_qr_svg",
 ]
