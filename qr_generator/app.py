@@ -17,6 +17,7 @@ except ImportError as exc:
     raise SystemExit("Missing dependency: run `python -m pip install -r requirements.txt` first.") from exc
 from PIL import Image, ImageColor
 
+from .engine import ContentAnalysis, ContentKind, analyze_content, render_qr_code
 from .renderer import (
     ErrorCorrectionLevel,
     EyeStyle,
@@ -24,7 +25,6 @@ from .renderer import (
     ModuleStyle,
     QrStyle,
     ScanQualityReport,
-    generate_qr,
     generate_qr_svg,
 )
 
@@ -33,6 +33,7 @@ DEFAULT_OUTPUT = Path("out/qr_with_logo.png")
 DEFAULT_LOGO = Path(getattr(sys, "_MEIPASS", Path.cwd())) / "assets" / "logo.png"
 OUTPUT_SIZE_PRESETS = ("Original", "512", "1024", "2048", "4096", "Custom")
 EXPORT_FORMATS = ("PNG", "SVG")
+CONTENT_TYPES = tuple(kind.value for kind in ContentKind)
 APP_SETTINGS_PATH = Path(os.getenv("APPDATA", Path.home())) / "QR Code Generator" / "settings.json"
 
 APP_BG = "#202020"
@@ -315,6 +316,8 @@ class QrGeneratorApp:
         self.root.configure(fg_color=APP_BG)
 
         self.content = tk.StringVar(value="https://www.epflracingteam.ch/en")
+        self.content_kind = tk.StringVar(value=ContentKind.AUTO.value)
+        self.content_summary = tk.StringVar(value="URL - 33 chars")
         self.error_correction = tk.StringVar(value=ErrorCorrectionLevel.H.value)
         self.box_size = tk.IntVar(value=24)
         self.border = tk.IntVar(value=4)
@@ -349,6 +352,9 @@ class QrGeneratorApp:
         self.color_swatches: dict[str, ctk.CTkFrame] = {}
         self.color_buttons: dict[str, ctk.CTkButton] = {}
         self.export_button: ctk.CTkButton | None = None
+        self.content_box: ctk.CTkTextbox | None = None
+        self.content_normalize_button: ctk.CTkButton | None = None
+        self.syncing_content_box = False
         self.syncing_logo_error_correction = False
 
         self._build_ui()
@@ -476,7 +482,7 @@ class QrGeneratorApp:
 
     def _build_qr_section(self, parent: ctk.CTkFrame) -> None:
         self._section_title(parent, "QR Code").pack(anchor="w", padx=8, pady=(24, 12))
-        self._entry_row(parent, "URL", self.content)
+        self._content_row(parent)
         self._option_row(parent, "Preset", self.preset_name, list(STYLE_PRESETS), self._apply_preset)
         self._preset_actions(parent)
         self._option_row(parent, "Error Correction", self.error_correction, [level.value for level in ErrorCorrectionLevel])
@@ -567,6 +573,53 @@ class QrGeneratorApp:
             text_color=TEXT,
             corner_radius=8,
         ).grid(row=0, column=0, sticky="ew")
+
+    def _content_row(self, parent: ctk.CTkFrame) -> None:
+        self._option_row(parent, "Content Type", self.content_kind, list(CONTENT_TYPES))
+        _, control = self._row(parent, "Content")
+        control.grid_columnconfigure(0, weight=1)
+
+        self.content_box = ctk.CTkTextbox(
+            control,
+            height=86,
+            fg_color=FIELD,
+            border_color=BORDER,
+            border_width=2,
+            text_color=TEXT,
+            corner_radius=8,
+            font=("Segoe UI", 15),
+            wrap="word",
+        )
+        self.content_box.grid(row=0, column=0, sticky="ew")
+        self.content_box.insert("1.0", self.content.get())
+        self.content_box.bind("<KeyRelease>", lambda _: self._sync_content_from_box())
+        self.content_box.bind("<FocusOut>", lambda _: self._sync_content_from_box())
+
+        footer = ctk.CTkFrame(control, fg_color=PANEL, corner_radius=0)
+        footer.grid(row=1, column=0, sticky="ew", pady=(8, 0))
+        footer.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(
+            footer,
+            textvariable=self.content_summary,
+            font=("Segoe UI", 12),
+            text_color=MUTED,
+            anchor="w",
+        ).grid(row=0, column=0, sticky="ew")
+        self.content_normalize_button = ctk.CTkButton(
+            footer,
+            text="Normalize",
+            command=self._normalize_content,
+            width=96,
+            height=30,
+            fg_color=FIELD,
+            hover_color="#3F4549",
+            border_color=BORDER,
+            border_width=1,
+            corner_radius=8,
+            text_color=TEXT,
+            state="disabled",
+        )
+        self.content_normalize_button.grid(row=0, column=1, sticky="e", padx=(8, 0))
 
     def _file_row(self, parent: ctk.CTkFrame, label: str, variable: tk.StringVar, command: Callable[[], None]) -> None:
         _, control = self._row(parent, label)
@@ -764,6 +817,7 @@ class QrGeneratorApp:
     def _bind_updates(self) -> None:
         variables = (
             self.content,
+            self.content_kind,
             self.error_correction,
             self.box_size,
             self.border,
@@ -782,6 +836,7 @@ class QrGeneratorApp:
         for variable in variables:
             variable.trace_add("write", lambda *_: self._schedule_preview())
 
+        self.content.trace_add("write", lambda *_: self._sync_content_box())
         self.fill_color.trace_add("write", lambda *_: self._paint_swatch("fill", self.fill_color.get()))
         self.eye_color.trace_add("write", lambda *_: self._paint_swatch("eye", self.eye_color.get()))
         self.back_color.trace_add("write", lambda *_: self._paint_swatch("back", self.back_color.get()))
@@ -806,10 +861,42 @@ class QrGeneratorApp:
             self.root.after_cancel(self.after_id)
         self.after_id = self.root.after(120, self._render_preview)
 
+    def _sync_content_from_box(self) -> None:
+        if self.content_box is None or self.syncing_content_box:
+            return
+        text = self.content_box.get("1.0", "end-1c")
+        if text != self.content.get():
+            self.content.set(text)
+
+    def _sync_content_box(self) -> None:
+        if self.content_box is None or self.syncing_content_box:
+            return
+        text = self.content.get()
+        current = self.content_box.get("1.0", "end-1c")
+        if current == text:
+            return
+
+        self.syncing_content_box = True
+        try:
+            self.content_box.delete("1.0", "end")
+            self.content_box.insert("1.0", text)
+        finally:
+            self.syncing_content_box = False
+
+    def _normalize_content(self) -> None:
+        analysis = self._analyze_current_content()
+        if analysis.normalized_content != self.content.get().strip():
+            self.content.set(analysis.normalized_content)
+
     def _render_preview(self) -> None:
         self.after_id = None
         try:
-            result = generate_qr(self._style(), self._logo(), output_size=self._quality_output_size())
+            result = render_qr_code(
+                self._style(),
+                self._logo(),
+                output_size=self._quality_output_size(),
+                content_kind=self.content_kind.get(),
+            )
         except Exception as exc:
             self.latest_image = None
             self.status.set(str(exc))
@@ -817,7 +904,8 @@ class QrGeneratorApp:
 
         self.latest_image = result.image
         self._draw_preview(result.image)
-        self._update_quality(result.quality)
+        self._update_content_summary(result.content)
+        self._update_quality(result.quality, result.validation)
 
     def _draw_preview(self, image: Image.Image) -> None:
         if self.preview_label is None or self.preview_card is None:
@@ -842,7 +930,12 @@ class QrGeneratorApp:
         self.preview_photo = ctk.CTkImage(light_image=canvas_rgb, dark_image=canvas_rgb, size=canvas_rgb.size)
         self.preview_label.configure(image=self.preview_photo, text="")
 
-    def _update_quality(self, quality: ScanQualityReport) -> None:
+    def _update_quality(
+        self,
+        quality: ScanQualityReport,
+        validation: tuple[object, ...] | tuple = (),
+    ) -> None:
+        messages = validation or quality.messages
         color = QUALITY_COLORS.get(quality.rating, FIELD)
         if self.quality_badge is not None:
             text_color = "#111111" if quality.rating in {"Excellent", "Good"} else "#FFFFFF"
@@ -860,26 +953,46 @@ class QrGeneratorApp:
                 )
             )
 
-        errors = [item.text for item in quality.messages if item.level == "error"]
-        warnings = [item.text for item in quality.messages if item.level == "warning"]
+        errors = [item.text for item in messages if item.level == "error"]
+        warnings = [item.text for item in messages if item.level == "warning"]
+        infos = [item.text for item in messages if item.level == "info"]
         if errors:
             self.status.set(errors[0])
         elif warnings:
             self.status.set(warnings[0])
+        elif infos:
+            self.status.set(infos[0])
         else:
             self.status.set("Excellent scan safety for the current settings.")
 
         if self.quality_details is not None:
-            if quality.messages:
-                details = "\n".join(f"- {message.text}" for message in quality.messages[:4])
+            if messages:
+                details = "\n".join(f"- {message.text}" for message in messages[:4])
             else:
                 details = "No scan risks detected for the current settings."
-            if len(quality.messages) > 4:
-                details += f"\n- {len(quality.messages) - 4} more checks need attention."
+            if len(messages) > 4:
+                details += f"\n- {len(messages) - 4} more checks need attention."
             wrap = max(280, (self.preview_card.winfo_width() if self.preview_card else 560) - 72)
             self.quality_details.configure(text=details, wraplength=wrap)
             if self.status_label is not None:
                 self.status_label.configure(wraplength=wrap)
+
+    def _analyze_current_content(self) -> ContentAnalysis:
+        return analyze_content(self.content.get(), self.content_kind.get())
+
+    def _update_content_summary(self, analysis: ContentAnalysis) -> None:
+        parts = [
+            analysis.kind.value,
+            f"{analysis.character_count} chars",
+            f"{analysis.byte_count} bytes",
+        ]
+        if analysis.normalized_content != self.content.get().strip():
+            parts.append("normalizable")
+        self.content_summary.set(" - ".join(parts))
+
+        if self.content_normalize_button is not None:
+            state = "normal" if analysis.normalized_content != self.content.get().strip() else "disabled"
+            self.content_normalize_button.configure(state=state)
 
     def _style(self) -> QrStyle:
         return QrStyle(
@@ -989,6 +1102,7 @@ class QrGeneratorApp:
             "version": PRESET_VERSION,
             "name": self.preset_name.get() or "Custom",
             "settings": {
+                "content_kind": self.content_kind.get(),
                 "error_correction": self.error_correction.get(),
                 "box_size": self.box_size.get(),
                 "border": self.border.get(),
@@ -1016,6 +1130,7 @@ class QrGeneratorApp:
 
         name = raw.get("name")
         self.preset_name.set(str(name) if name else "Custom")
+        self.content_kind.set(_choice(settings, "content_kind", ContentKind, self.content_kind.get()))
         self.error_correction.set(_choice(settings, "error_correction", ErrorCorrectionLevel, self.error_correction.get()))
         self.box_size.set(_int_between(settings, "box_size", 8, 64, self.box_size.get()))
         self.border.set(_int_between(settings, "border", 1, 8, self.border.get()))
@@ -1088,7 +1203,12 @@ class QrGeneratorApp:
             self._save_app_settings()
 
     def _export(self) -> None:
-        result = generate_qr(self._style(), self._logo(), output_size=self._quality_output_size())
+        result = render_qr_code(
+            self._style(),
+            self._logo(),
+            output_size=self._quality_output_size(),
+            content_kind=self.content_kind.get(),
+        )
         errors = [item.text for item in result.validation if item.level == "error"]
         if errors:
             messagebox.showerror("Cannot export", errors[0], parent=self.root)
@@ -1105,7 +1225,7 @@ class QrGeneratorApp:
         out_path.parent.mkdir(parents=True, exist_ok=True)
         if self.export_format.get() == "SVG":
             svg = generate_qr_svg(
-                self._style(),
+                result.style,
                 self._logo(),
                 transparent_background=self.transparent_background.get(),
                 display_size=self._selected_export_size(result.image.size[0]),
@@ -1119,7 +1239,12 @@ class QrGeneratorApp:
         self.status.set(f"Saved {out_path.name}")
 
     def _copy_png(self) -> None:
-        result = generate_qr(self._style(), self._logo(), output_size=self._selected_fixed_output_size())
+        result = render_qr_code(
+            self._style(),
+            self._logo(),
+            output_size=self._selected_fixed_output_size(),
+            content_kind=self.content_kind.get(),
+        )
         errors = [item.text for item in result.validation if item.level == "error"]
         if errors:
             messagebox.showerror("Cannot copy", errors[0], parent=self.root)
