@@ -5,7 +5,7 @@ A desktop QR code generator for creating branded PNG QR codes with a live previe
 ## Setup
 
 ```bash
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 ```
 
 ## Run
@@ -13,6 +13,23 @@ pip install -r requirements.txt
 ```bash
 python qr_gen.py
 ```
+
+## Build Windows EXE
+
+Install the build dependencies and run PyInstaller from the repository root:
+
+```bash
+python -m pip install -r requirements-build.txt
+python -m PyInstaller QR_Generator.spec --noconfirm --clean
+```
+
+The executable is created at:
+
+```text
+dist/QR Code Generator.exe
+```
+
+GitHub Actions also builds the executable automatically on pushes to `dev`, pull requests into `dev`, version tags matching `v*`, and manual workflow runs. Download the `QR-Code-Generator-Windows` artifact from the workflow run.
 
 ## Features
 

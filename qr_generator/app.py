@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import sys
 from typing import Callable
 import tkinter as tk
 from tkinter import filedialog, messagebox
@@ -16,7 +17,7 @@ from .renderer import ErrorCorrectionLevel, LogoOptions, QrStyle, generate_qr
 
 
 DEFAULT_OUTPUT = Path("out/qr_with_logo.png")
-DEFAULT_LOGO = Path("assets/logo.png")
+DEFAULT_LOGO = Path(getattr(sys, "_MEIPASS", Path.cwd())) / "assets" / "logo.png"
 
 APP_BG = "#202020"
 PANEL = "#2B2B2B"
