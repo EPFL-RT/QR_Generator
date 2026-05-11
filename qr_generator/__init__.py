@@ -1,3 +1,4 @@
+from .engine import ContentAnalysis, ContentKind, EngineRenderResult, analyze_content, render_qr_code
 from .renderer import (
     ErrorCorrectionLevel,
     EyeStyle,
@@ -13,6 +14,9 @@ from .renderer import (
 )
 
 __all__ = [
+    "ContentAnalysis",
+    "ContentKind",
+    "EngineRenderResult",
     "ErrorCorrectionLevel",
     "EyeStyle",
     "LogoOptions",
@@ -21,7 +25,9 @@ __all__ = [
     "QrStyle",
     "ScanQualityReport",
     "ValidationMessage",
+    "analyze_content",
     "assess_scan_quality",
     "generate_qr",
     "generate_qr_svg",
+    "render_qr_code",
 ]

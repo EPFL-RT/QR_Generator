@@ -34,6 +34,8 @@ GitHub Actions also builds the executable automatically on pushes to `dev`, pull
 ## Features
 
 - Live desktop GUI preview
+- GUI-friendly QR engine separated from the desktop interface
+- Content type detection and URL normalization
 - Square, rounded, and dot QR modules
 - Square, rounded, and circular finder eyes
 - Style presets including EPFL red-eye variants
