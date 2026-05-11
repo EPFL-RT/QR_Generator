@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import sys
-from typing import Callable
+from typing import Any, Callable
 import tkinter as tk
 from tkinter import filedialog, messagebox
 from tkinter.colorchooser import askcolor
@@ -30,6 +31,8 @@ ACCENT = "#2577B2"
 ACCENT_HOVER = "#1E669B"
 DANGER = "#D21F3C"
 DANGER_HOVER = "#B81731"
+PRESET_VERSION = 1
+PRESET_FILETYPES = (("QR preset", "*.qrpreset.json"), ("JSON", "*.json"), ("All files", "*.*"))
 
 STYLE_PRESETS = {
     "Classic": {
@@ -195,6 +198,7 @@ class QrGeneratorApp:
         self._section_title(parent, "QR Code").pack(anchor="w", padx=8, pady=(24, 12))
         self._entry_row(parent, "URL", self.content)
         self._option_row(parent, "Preset", self.preset_name, list(STYLE_PRESETS), self._apply_preset)
+        self._preset_actions(parent)
         self._option_row(parent, "Error Correction", self.error_correction, [level.value for level in ErrorCorrectionLevel])
         self._option_row(parent, "Module Style", self.module_style, [style.value for style in ModuleStyle])
         self._option_row(parent, "Eye Style", self.eye_style, [style.value for style in EyeStyle])
@@ -293,6 +297,35 @@ class QrGeneratorApp:
             corner_radius=8,
             font=("Segoe UI Semibold", 15),
         ).grid(row=0, column=1, sticky="e")
+
+    def _preset_actions(self, parent: ctk.CTkFrame) -> None:
+        row = ctk.CTkFrame(parent, fg_color=PANEL, corner_radius=0)
+        row.pack(fill="x", padx=8, pady=(0, 10))
+        row.grid_columnconfigure((0, 1), weight=1)
+
+        ctk.CTkButton(
+            row,
+            text="Load Preset",
+            command=self._load_preset_file,
+            height=38,
+            fg_color=FIELD,
+            hover_color="#3F4549",
+            border_color=BORDER,
+            border_width=1,
+            corner_radius=8,
+            text_color=TEXT,
+        ).grid(row=0, column=0, sticky="ew", padx=(0, 6))
+
+        ctk.CTkButton(
+            row,
+            text="Save Preset",
+            command=self._save_preset_file,
+            height=38,
+            fg_color=ACCENT,
+            hover_color=ACCENT_HOVER,
+            corner_radius=8,
+            text_color=TEXT,
+        ).grid(row=0, column=1, sticky="ew", padx=(6, 0))
 
     def _option_row(
         self,
@@ -520,6 +553,110 @@ class QrGeneratorApp:
         if "logo_size" in preset:
             self.logo_size.set(int(preset["logo_size"]))
 
+    def _save_preset_file(self) -> None:
+        initial_name = _preset_filename(self.preset_name.get())
+        path = filedialog.asksaveasfilename(
+            parent=self.root,
+            title="Save QR preset",
+            defaultextension=".qrpreset.json",
+            filetypes=PRESET_FILETYPES,
+            initialfile=initial_name,
+        )
+        if not path:
+            return
+
+        try:
+            Path(path).write_text(json.dumps(self._preset_data(), indent=2), encoding="utf-8")
+        except OSError as exc:
+            messagebox.showerror("Could not save preset", str(exc), parent=self.root)
+            return
+
+        self.status.set(f"Saved preset {Path(path).name}")
+
+    def _load_preset_file(self) -> None:
+        path = filedialog.askopenfilename(
+            parent=self.root,
+            title="Load QR preset",
+            filetypes=PRESET_FILETYPES,
+        )
+        if not path:
+            return
+
+        try:
+            raw = json.loads(Path(path).read_text(encoding="utf-8"))
+            self._apply_preset_data(raw)
+        except (OSError, ValueError, TypeError, KeyError) as exc:
+            messagebox.showerror("Could not load preset", str(exc), parent=self.root)
+            return
+
+        self.status.set(f"Loaded preset {Path(path).name}")
+
+    def _preset_data(self) -> dict[str, object]:
+        return {
+            "schema": "qr-generator-preset",
+            "version": PRESET_VERSION,
+            "name": self.preset_name.get() or "Custom",
+            "settings": {
+                "error_correction": self.error_correction.get(),
+                "box_size": self.box_size.get(),
+                "border": self.border.get(),
+                "fill_color": self.fill_color.get(),
+                "eye_color": self.eye_color.get(),
+                "back_color": self.back_color.get(),
+                "module_style": self.module_style.get(),
+                "eye_style": self.eye_style.get(),
+                "module_radius": self.module_radius.get(),
+                "use_logo": self.use_logo.get(),
+                "logo_path": self._serializable_logo_path(),
+                "logo_size": self.logo_size.get(),
+                "logo_padding_x": self.logo_padding_x.get(),
+                "logo_padding_y": self.logo_padding_y.get(),
+            },
+        }
+
+    def _apply_preset_data(self, raw: Any) -> None:
+        if not isinstance(raw, dict):
+            raise ValueError("Preset file must contain a JSON object.")
+
+        settings = raw.get("settings", raw)
+        if not isinstance(settings, dict):
+            raise ValueError("Preset file is missing a settings object.")
+
+        name = raw.get("name")
+        self.preset_name.set(str(name) if name else "Custom")
+        self.error_correction.set(_choice(settings, "error_correction", ErrorCorrectionLevel, self.error_correction.get()))
+        self.box_size.set(_int_between(settings, "box_size", 8, 64, self.box_size.get()))
+        self.border.set(_int_between(settings, "border", 1, 8, self.border.get()))
+        self.fill_color.set(_string(settings, "fill_color", self.fill_color.get()))
+        self.eye_color.set(_string(settings, "eye_color", self.eye_color.get()))
+        self.back_color.set(_string(settings, "back_color", self.back_color.get()))
+        self.module_style.set(_choice(settings, "module_style", ModuleStyle, self.module_style.get()))
+        self.eye_style.set(_choice(settings, "eye_style", EyeStyle, self.eye_style.get()))
+        self.module_radius.set(_int_between(settings, "module_radius", 0, 50, self.module_radius.get()))
+        self.use_logo.set(_bool(settings, "use_logo", self.use_logo.get()))
+        self.logo_path.set(self._deserialized_logo_path(_string(settings, "logo_path", self.logo_path.get())))
+        self.logo_size.set(_int_between(settings, "logo_size", 10, 30, self.logo_size.get()))
+        self.logo_padding_x.set(_int_between(settings, "logo_padding_x", 0, 160, self.logo_padding_x.get()))
+        self.logo_padding_y.set(_int_between(settings, "logo_padding_y", 0, 200, self.logo_padding_y.get()))
+
+    def _serializable_logo_path(self) -> str:
+        raw_path = self.logo_path.get().strip()
+        if not raw_path:
+            return ""
+
+        current = Path(raw_path)
+        try:
+            if current.resolve() == DEFAULT_LOGO.resolve():
+                return "__bundled_logo__"
+        except OSError:
+            pass
+        return str(current)
+
+    def _deserialized_logo_path(self, value: str) -> str:
+        if value == "__bundled_logo__":
+            return str(DEFAULT_LOGO)
+        return value
+
     def _pick_color(self, variable: tk.StringVar) -> None:
         _, hex_color = askcolor(color=variable.get(), parent=self.root)
         if hex_color:
@@ -562,3 +699,46 @@ class QrGeneratorApp:
 def main() -> None:
     app = QrGeneratorApp()
     app.run()
+
+
+def _preset_filename(name: str) -> str:
+    safe = "".join(character.lower() if character.isalnum() else "-" for character in name.strip())
+    safe = "-".join(part for part in safe.split("-") if part)
+    return f"{safe or 'qr-preset'}.qrpreset.json"
+
+
+def _string(settings: dict[Any, Any], key: str, default: str) -> str:
+    value = settings.get(key, default)
+    if value is None:
+        return ""
+    return str(value)
+
+
+def _bool(settings: dict[Any, Any], key: str, default: bool) -> bool:
+    value = settings.get(key, default)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "yes", "on"}:
+            return True
+        if normalized in {"false", "0", "no", "off"}:
+            return False
+    raise ValueError(f"Preset value for {key} must be true or false.")
+
+
+def _int_between(settings: dict[Any, Any], key: str, minimum: int, maximum: int, default: int) -> int:
+    value = settings.get(key, default)
+    try:
+        parsed = round(float(value))
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"Preset value for {key} must be a number.") from exc
+    return max(minimum, min(maximum, parsed))
+
+
+def _choice(settings: dict[Any, Any], key: str, enum_class: Any, default: str) -> str:
+    value = str(settings.get(key, default))
+    allowed = {item.value for item in enum_class}
+    if value not in allowed:
+        raise ValueError(f"Preset value for {key} must be one of: {', '.join(sorted(allowed))}.")
+    return value

@@ -37,6 +37,7 @@ GitHub Actions also builds the executable automatically on pushes to `dev`, pull
 - Square, rounded, and dot QR modules
 - Square, rounded, and circular finder eyes
 - Style presets including EPFL red-eye variants
+- Load and save custom style presets as JSON files
 - Custom foreground, eye, and background colors
 - Optional centered logo
 - Error correction controls
