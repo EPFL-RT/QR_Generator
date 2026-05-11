@@ -37,6 +37,7 @@ GitHub Actions also builds the executable automatically on pushes to `dev`, pull
 - GUI-friendly QR engine separated from the desktop interface
 - Content type detection and URL normalization
 - Square, rounded, and dot QR modules
+- Attractive one-click style presets with optional module gradients
 - Square, rounded, and circular finder eyes
 - Style presets including EPFL red-eye variants
 - Load and save custom style presets as JSON files
