@@ -793,7 +793,6 @@ class QrGeneratorApp:
 
         self.use_logo.trace_add("write", lambda *_: self._ensure_logo_error_correction())
         self.logo_path.trace_add("write", lambda *_: self._ensure_logo_error_correction())
-        self.error_correction.trace_add("write", lambda *_: self._ensure_logo_error_correction())
 
         self.export_format.trace_add("write", lambda *_: self._schedule_preview())
         self.output_size.trace_add("write", lambda *_: self._schedule_preview())
