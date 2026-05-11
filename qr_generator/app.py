@@ -1,19 +1,19 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import sys
-from typing import Callable
+from typing import Any, Callable
 import tkinter as tk
 from tkinter import filedialog, messagebox
-from tkinter.colorchooser import askcolor
 
 try:
     import customtkinter as ctk
 except ImportError as exc:
     raise SystemExit("Missing dependency: run `python -m pip install -r requirements.txt` first.") from exc
-from PIL import Image
+from PIL import Image, ImageColor
 
-from .renderer import ErrorCorrectionLevel, LogoOptions, QrStyle, generate_qr
+from .renderer import ErrorCorrectionLevel, EyeStyle, LogoOptions, ModuleStyle, QrStyle, generate_qr
 
 
 DEFAULT_OUTPUT = Path("out/qr_with_logo.png")
@@ -30,6 +30,245 @@ ACCENT = "#2577B2"
 ACCENT_HOVER = "#1E669B"
 DANGER = "#D21F3C"
 DANGER_HOVER = "#B81731"
+PRESET_VERSION = 1
+PRESET_FILETYPES = (("QR preset", "*.qrpreset.json"), ("JSON", "*.json"), ("All files", "*.*"))
+COLOR_SWATCHES = (
+    "#000000",
+    "#FFFFFF",
+    "#D21F3C",
+    "#2577B2",
+    "#111111",
+    "#34383B",
+    "#5F6870",
+    "#F4F7FB",
+    "#E10600",
+    "#00A3E0",
+    "#00B050",
+    "#FFB000",
+)
+
+STYLE_PRESETS = {
+    "Classic": {
+        "fill_color": "#000000",
+        "eye_color": "#000000",
+        "back_color": "#FFFFFF",
+        "module_style": ModuleStyle.SQUARE.value,
+        "eye_style": EyeStyle.SQUARE.value,
+        "module_radius": 0,
+    },
+    "EPFL Red Eyes": {
+        "fill_color": "#000000",
+        "eye_color": "#D21F3C",
+        "back_color": "#FFFFFF",
+        "module_style": ModuleStyle.SQUARE.value,
+        "eye_style": EyeStyle.ROUNDED.value,
+        "module_radius": 0,
+    },
+    "Rounded": {
+        "fill_color": "#111111",
+        "eye_color": "#D21F3C",
+        "back_color": "#FFFFFF",
+        "module_style": ModuleStyle.ROUNDED.value,
+        "eye_style": EyeStyle.ROUNDED.value,
+        "module_radius": 35,
+    },
+    "Dots": {
+        "fill_color": "#111111",
+        "eye_color": "#D21F3C",
+        "back_color": "#FFFFFF",
+        "module_style": ModuleStyle.DOTS.value,
+        "eye_style": EyeStyle.CIRCLE.value,
+        "module_radius": 50,
+        "border": 4,
+        "logo_size": 24,
+    },
+}
+
+
+class ColorPickerDialog:
+    def __init__(self, parent: ctk.CTk, initial_color: str) -> None:
+        self.parent = parent
+        self.result: str | None = None
+
+        color = _normalize_hex_color(initial_color)
+        red, green, blue = _hex_to_rgb(color)
+
+        self.hex_value = tk.StringVar(value=color)
+        self.red = tk.IntVar(value=red)
+        self.green = tk.IntVar(value=green)
+        self.blue = tk.IntVar(value=blue)
+        self.error = tk.StringVar(value="")
+
+        self.window = ctk.CTkToplevel(parent)
+        self.window.title("Choose Color")
+        self.window.configure(fg_color=APP_BG)
+        self.window.resizable(False, False)
+        self.window.transient(parent)
+        self.window.grab_set()
+        self.window.protocol("WM_DELETE_WINDOW", self._cancel)
+        self.window.bind("<Escape>", lambda _: self._cancel())
+
+        self._build_ui()
+        self._position()
+
+    def show(self) -> str | None:
+        self.window.wait_window()
+        return self.result
+
+    def _build_ui(self) -> None:
+        shell = ctk.CTkFrame(self.window, fg_color=PANEL, corner_radius=10)
+        shell.pack(fill="both", expand=True, padx=18, pady=18)
+        shell.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(shell, text="Choose color", font=("Segoe UI Semibold", 18), text_color=TEXT).grid(
+            row=0,
+            column=0,
+            sticky="w",
+            padx=18,
+            pady=(18, 12),
+        )
+
+        preview_row = ctk.CTkFrame(shell, fg_color=PANEL, corner_radius=0)
+        preview_row.grid(row=1, column=0, sticky="ew", padx=18, pady=(0, 14))
+        preview_row.grid_columnconfigure(1, weight=1)
+
+        self.preview = ctk.CTkFrame(preview_row, width=64, height=64, fg_color=self.hex_value.get(), corner_radius=10)
+        self.preview.grid(row=0, column=0, sticky="w", padx=(0, 14))
+        self.preview.grid_propagate(False)
+
+        ctk.CTkEntry(
+            preview_row,
+            textvariable=self.hex_value,
+            height=42,
+            fg_color=FIELD,
+            border_color=BORDER,
+            text_color=TEXT,
+            corner_radius=8,
+            font=("Segoe UI Semibold", 15),
+        ).grid(row=0, column=1, sticky="ew")
+
+        swatches = ctk.CTkFrame(shell, fg_color=PANEL, corner_radius=0)
+        swatches.grid(row=2, column=0, sticky="ew", padx=18, pady=(0, 12))
+        for index, color in enumerate(COLOR_SWATCHES):
+            swatch = ctk.CTkButton(
+                swatches,
+                text="",
+                width=34,
+                height=34,
+                fg_color=color,
+                hover_color=color,
+                border_color=BORDER,
+                border_width=1,
+                corner_radius=8,
+                command=lambda chosen=color: self._set_color(chosen),
+            )
+            swatch.grid(row=index // 6, column=index % 6, padx=4, pady=4)
+
+        self._channel_slider(shell, "R", self.red, 3)
+        self._channel_slider(shell, "G", self.green, 4)
+        self._channel_slider(shell, "B", self.blue, 5)
+
+        ctk.CTkLabel(shell, textvariable=self.error, text_color="#FF9BA7", font=("Segoe UI", 12)).grid(
+            row=6,
+            column=0,
+            sticky="w",
+            padx=18,
+            pady=(0, 6),
+        )
+
+        actions = ctk.CTkFrame(shell, fg_color=PANEL, corner_radius=0)
+        actions.grid(row=7, column=0, sticky="ew", padx=18, pady=(4, 18))
+        actions.grid_columnconfigure((0, 1), weight=1)
+
+        ctk.CTkButton(
+            actions,
+            text="Cancel",
+            command=self._cancel,
+            height=40,
+            fg_color=FIELD,
+            hover_color="#3F4549",
+            border_color=BORDER,
+            border_width=1,
+            corner_radius=8,
+            text_color=TEXT,
+        ).grid(row=0, column=0, sticky="ew", padx=(0, 6))
+
+        ctk.CTkButton(
+            actions,
+            text="Apply",
+            command=self._apply,
+            height=40,
+            fg_color=ACCENT,
+            hover_color=ACCENT_HOVER,
+            corner_radius=8,
+            text_color=TEXT,
+        ).grid(row=0, column=1, sticky="ew", padx=(6, 0))
+
+    def _channel_slider(self, parent: ctk.CTkFrame, label: str, variable: tk.IntVar, row: int) -> None:
+        frame = ctk.CTkFrame(parent, fg_color=PANEL, corner_radius=0)
+        frame.grid(row=row, column=0, sticky="ew", padx=18, pady=5)
+        frame.grid_columnconfigure(1, weight=1)
+
+        ctk.CTkLabel(frame, text=label, text_color=MUTED, width=18, font=("Segoe UI Semibold", 13)).grid(
+            row=0,
+            column=0,
+            sticky="w",
+            padx=(0, 10),
+        )
+        ctk.CTkSlider(
+            frame,
+            from_=0,
+            to=255,
+            number_of_steps=255,
+            variable=variable,
+            fg_color="#4A4F54",
+            progress_color=ACCENT,
+            button_color="#D7E8F6",
+            button_hover_color="#FFFFFF",
+            command=lambda raw, channel=variable: self._set_channel(channel, raw),
+        ).grid(row=0, column=1, sticky="ew")
+        ctk.CTkLabel(frame, textvariable=variable, text_color=TEXT, width=34, font=("Segoe UI", 13)).grid(
+            row=0,
+            column=2,
+            sticky="e",
+            padx=(10, 0),
+        )
+
+    def _position(self) -> None:
+        self.window.update_idletasks()
+        x = self.parent.winfo_rootx() + max(0, (self.parent.winfo_width() - self.window.winfo_width()) // 2)
+        y = self.parent.winfo_rooty() + max(0, (self.parent.winfo_height() - self.window.winfo_height()) // 2)
+        self.window.geometry(f"+{x}+{y}")
+        self.window.focus_force()
+
+    def _set_channel(self, variable: tk.IntVar, raw: float) -> None:
+        variable.set(round(float(raw)))
+        self._update_from_rgb()
+
+    def _update_from_rgb(self) -> None:
+        self._set_color(_rgb_to_hex(self.red.get(), self.green.get(), self.blue.get()))
+
+    def _set_color(self, color: str) -> None:
+        normalized = _normalize_hex_color(color, self.hex_value.get())
+        red, green, blue = _hex_to_rgb(normalized)
+        self.red.set(red)
+        self.green.set(green)
+        self.blue.set(blue)
+        self.hex_value.set(normalized)
+        self.preview.configure(fg_color=normalized)
+        self.error.set("")
+
+    def _apply(self) -> None:
+        raw = self.hex_value.get().strip()
+        if not _is_hex_color(raw):
+            self.error.set("Use a valid hex color, for example #D21F3C.")
+            return
+
+        self.result = _normalize_hex_color(raw)
+        self.window.destroy()
+
+    def _cancel(self) -> None:
+        self.window.destroy()
 
 
 class QrGeneratorApp:
@@ -49,7 +288,11 @@ class QrGeneratorApp:
         self.border = tk.IntVar(value=1)
         self.fill_color = tk.StringVar(value="#000000")
         self.back_color = tk.StringVar(value="#FFFFFF")
+        self.eye_color = tk.StringVar(value="#000000")
+        self.module_style = tk.StringVar(value=ModuleStyle.SQUARE.value)
+        self.eye_style = tk.StringVar(value=EyeStyle.SQUARE.value)
         self.module_radius = tk.IntVar(value=0)
+        self.preset_name = tk.StringVar(value="Classic")
         self.use_logo = tk.BooleanVar(value=DEFAULT_LOGO.exists())
         self.logo_path = tk.StringVar(value=str(DEFAULT_LOGO if DEFAULT_LOGO.exists() else ""))
         self.logo_size = tk.IntVar(value=30)
@@ -153,10 +396,15 @@ class QrGeneratorApp:
     def _build_qr_section(self, parent: ctk.CTkFrame) -> None:
         self._section_title(parent, "QR Code").pack(anchor="w", padx=8, pady=(24, 12))
         self._entry_row(parent, "URL", self.content)
+        self._option_row(parent, "Preset", self.preset_name, list(STYLE_PRESETS), self._apply_preset)
+        self._preset_actions(parent)
         self._option_row(parent, "Error Correction", self.error_correction, [level.value for level in ErrorCorrectionLevel])
+        self._option_row(parent, "Module Style", self.module_style, [style.value for style in ModuleStyle])
+        self._option_row(parent, "Eye Style", self.eye_style, [style.value for style in EyeStyle])
         self._number_row(parent, "Box Size", self.box_size, 8, 64)
         self._number_row(parent, "Border", self.border, 1, 8)
         self._color_row(parent, "Fill Color", self.fill_color, "fill")
+        self._color_row(parent, "Eye Color", self.eye_color, "eye")
         self._color_row(parent, "Background", self.back_color, "back")
         self._number_row(parent, "Roundness", self.module_radius, 0, 50)
 
@@ -249,12 +497,49 @@ class QrGeneratorApp:
             font=("Segoe UI Semibold", 15),
         ).grid(row=0, column=1, sticky="e")
 
-    def _option_row(self, parent: ctk.CTkFrame, label: str, variable: tk.StringVar, values: list[str]) -> None:
+    def _preset_actions(self, parent: ctk.CTkFrame) -> None:
+        row = ctk.CTkFrame(parent, fg_color=PANEL, corner_radius=0)
+        row.pack(fill="x", padx=8, pady=(0, 10))
+        row.grid_columnconfigure((0, 1), weight=1)
+
+        ctk.CTkButton(
+            row,
+            text="Load Preset",
+            command=self._load_preset_file,
+            height=38,
+            fg_color=FIELD,
+            hover_color="#3F4549",
+            border_color=BORDER,
+            border_width=1,
+            corner_radius=8,
+            text_color=TEXT,
+        ).grid(row=0, column=0, sticky="ew", padx=(0, 6))
+
+        ctk.CTkButton(
+            row,
+            text="Save Preset",
+            command=self._save_preset_file,
+            height=38,
+            fg_color=ACCENT,
+            hover_color=ACCENT_HOVER,
+            corner_radius=8,
+            text_color=TEXT,
+        ).grid(row=0, column=1, sticky="ew", padx=(6, 0))
+
+    def _option_row(
+        self,
+        parent: ctk.CTkFrame,
+        label: str,
+        variable: tk.StringVar,
+        values: list[str],
+        command: Callable[[str], None] | None = None,
+    ) -> None:
         _, control = self._row(parent, label)
         ctk.CTkOptionMenu(
             control,
             variable=variable,
             values=values,
+            command=command,
             height=40,
             width=120,
             fg_color=ACCENT,
@@ -357,6 +642,9 @@ class QrGeneratorApp:
             self.border,
             self.fill_color,
             self.back_color,
+            self.eye_color,
+            self.module_style,
+            self.eye_style,
             self.module_radius,
             self.use_logo,
             self.logo_path,
@@ -368,6 +656,7 @@ class QrGeneratorApp:
             variable.trace_add("write", lambda *_: self._schedule_preview())
 
         self.fill_color.trace_add("write", lambda *_: self._paint_swatch("fill", self.fill_color.get()))
+        self.eye_color.trace_add("write", lambda *_: self._paint_swatch("eye", self.eye_color.get()))
         self.back_color.trace_add("write", lambda *_: self._paint_swatch("back", self.back_color.get()))
 
         if self.preview_card:
@@ -422,6 +711,9 @@ class QrGeneratorApp:
             border=self.border.get(),
             fill_color=self.fill_color.get(),
             back_color=self.back_color.get(),
+            eye_color=self.eye_color.get(),
+            module_style=ModuleStyle(self.module_style.get()),
+            eye_style=EyeStyle(self.eye_style.get()),
             module_radius=self.module_radius.get() / 100,
         )
 
@@ -443,8 +735,130 @@ class QrGeneratorApp:
         if button is not None:
             button.configure(text=color)
 
+    def _apply_preset(self, name: str) -> None:
+        preset = STYLE_PRESETS.get(name)
+        if not preset:
+            return
+
+        self.fill_color.set(str(preset["fill_color"]))
+        self.eye_color.set(str(preset["eye_color"]))
+        self.back_color.set(str(preset["back_color"]))
+        self.module_style.set(str(preset["module_style"]))
+        self.eye_style.set(str(preset["eye_style"]))
+        self.module_radius.set(int(preset["module_radius"]))
+
+        if "border" in preset:
+            self.border.set(int(preset["border"]))
+        if "logo_size" in preset:
+            self.logo_size.set(int(preset["logo_size"]))
+
+    def _save_preset_file(self) -> None:
+        initial_name = _preset_filename(self.preset_name.get())
+        path = filedialog.asksaveasfilename(
+            parent=self.root,
+            title="Save QR preset",
+            defaultextension=".qrpreset.json",
+            filetypes=PRESET_FILETYPES,
+            initialfile=initial_name,
+        )
+        if not path:
+            return
+
+        try:
+            Path(path).write_text(json.dumps(self._preset_data(), indent=2), encoding="utf-8")
+        except OSError as exc:
+            messagebox.showerror("Could not save preset", str(exc), parent=self.root)
+            return
+
+        self.status.set(f"Saved preset {Path(path).name}")
+
+    def _load_preset_file(self) -> None:
+        path = filedialog.askopenfilename(
+            parent=self.root,
+            title="Load QR preset",
+            filetypes=PRESET_FILETYPES,
+        )
+        if not path:
+            return
+
+        try:
+            raw = json.loads(Path(path).read_text(encoding="utf-8"))
+            self._apply_preset_data(raw)
+        except (OSError, ValueError, TypeError, KeyError) as exc:
+            messagebox.showerror("Could not load preset", str(exc), parent=self.root)
+            return
+
+        self.status.set(f"Loaded preset {Path(path).name}")
+
+    def _preset_data(self) -> dict[str, object]:
+        return {
+            "schema": "qr-generator-preset",
+            "version": PRESET_VERSION,
+            "name": self.preset_name.get() or "Custom",
+            "settings": {
+                "error_correction": self.error_correction.get(),
+                "box_size": self.box_size.get(),
+                "border": self.border.get(),
+                "fill_color": self.fill_color.get(),
+                "eye_color": self.eye_color.get(),
+                "back_color": self.back_color.get(),
+                "module_style": self.module_style.get(),
+                "eye_style": self.eye_style.get(),
+                "module_radius": self.module_radius.get(),
+                "use_logo": self.use_logo.get(),
+                "logo_path": self._serializable_logo_path(),
+                "logo_size": self.logo_size.get(),
+                "logo_padding_x": self.logo_padding_x.get(),
+                "logo_padding_y": self.logo_padding_y.get(),
+            },
+        }
+
+    def _apply_preset_data(self, raw: Any) -> None:
+        if not isinstance(raw, dict):
+            raise ValueError("Preset file must contain a JSON object.")
+
+        settings = raw.get("settings", raw)
+        if not isinstance(settings, dict):
+            raise ValueError("Preset file is missing a settings object.")
+
+        name = raw.get("name")
+        self.preset_name.set(str(name) if name else "Custom")
+        self.error_correction.set(_choice(settings, "error_correction", ErrorCorrectionLevel, self.error_correction.get()))
+        self.box_size.set(_int_between(settings, "box_size", 8, 64, self.box_size.get()))
+        self.border.set(_int_between(settings, "border", 1, 8, self.border.get()))
+        self.fill_color.set(_string(settings, "fill_color", self.fill_color.get()))
+        self.eye_color.set(_string(settings, "eye_color", self.eye_color.get()))
+        self.back_color.set(_string(settings, "back_color", self.back_color.get()))
+        self.module_style.set(_choice(settings, "module_style", ModuleStyle, self.module_style.get()))
+        self.eye_style.set(_choice(settings, "eye_style", EyeStyle, self.eye_style.get()))
+        self.module_radius.set(_int_between(settings, "module_radius", 0, 50, self.module_radius.get()))
+        self.use_logo.set(_bool(settings, "use_logo", self.use_logo.get()))
+        self.logo_path.set(self._deserialized_logo_path(_string(settings, "logo_path", self.logo_path.get())))
+        self.logo_size.set(_int_between(settings, "logo_size", 10, 30, self.logo_size.get()))
+        self.logo_padding_x.set(_int_between(settings, "logo_padding_x", 0, 160, self.logo_padding_x.get()))
+        self.logo_padding_y.set(_int_between(settings, "logo_padding_y", 0, 200, self.logo_padding_y.get()))
+
+    def _serializable_logo_path(self) -> str:
+        raw_path = self.logo_path.get().strip()
+        if not raw_path:
+            return ""
+
+        current = Path(raw_path)
+        try:
+            if current.resolve() == DEFAULT_LOGO.resolve():
+                return "__bundled_logo__"
+        except OSError:
+            pass
+        return str(current)
+
+    def _deserialized_logo_path(self, value: str) -> str:
+        if value == "__bundled_logo__":
+            return str(DEFAULT_LOGO)
+        return value
+
     def _pick_color(self, variable: tk.StringVar) -> None:
-        _, hex_color = askcolor(color=variable.get(), parent=self.root)
+        picker = ColorPickerDialog(self.root, variable.get())
+        hex_color = picker.show()
         if hex_color:
             variable.set(hex_color)
 
@@ -485,3 +899,79 @@ class QrGeneratorApp:
 def main() -> None:
     app = QrGeneratorApp()
     app.run()
+
+
+def _preset_filename(name: str) -> str:
+    safe = "".join(character.lower() if character.isalnum() else "-" for character in name.strip())
+    safe = "-".join(part for part in safe.split("-") if part)
+    return f"{safe or 'qr-preset'}.qrpreset.json"
+
+
+def _normalize_hex_color(value: str, default: str = "#000000") -> str:
+    raw_value = value.strip()
+    if _is_hex_color(raw_value):
+        normalized = raw_value if raw_value.startswith("#") else f"#{raw_value}"
+        return normalized.upper()
+
+    try:
+        red, green, blue = ImageColor.getrgb(raw_value or default)[:3]
+    except ValueError:
+        red, green, blue = ImageColor.getrgb(default)[:3]
+    return _rgb_to_hex(red, green, blue)
+
+
+def _is_hex_color(value: str) -> bool:
+    value = value.strip()
+    if value.startswith("#"):
+        value = value[1:]
+    return len(value) == 6 and all(character in "0123456789abcdefABCDEF" for character in value)
+
+
+def _hex_to_rgb(value: str) -> tuple[int, int, int]:
+    normalized = _normalize_hex_color(value)
+    return int(normalized[1:3], 16), int(normalized[3:5], 16), int(normalized[5:7], 16)
+
+
+def _rgb_to_hex(red: int, green: int, blue: int) -> str:
+    return f"#{_clamp_color(red):02X}{_clamp_color(green):02X}{_clamp_color(blue):02X}"
+
+
+def _clamp_color(value: int) -> int:
+    return max(0, min(255, int(value)))
+
+
+def _string(settings: dict[Any, Any], key: str, default: str) -> str:
+    value = settings.get(key, default)
+    if value is None:
+        return ""
+    return str(value)
+
+
+def _bool(settings: dict[Any, Any], key: str, default: bool) -> bool:
+    value = settings.get(key, default)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "yes", "on"}:
+            return True
+        if normalized in {"false", "0", "no", "off"}:
+            return False
+    raise ValueError(f"Preset value for {key} must be true or false.")
+
+
+def _int_between(settings: dict[Any, Any], key: str, minimum: int, maximum: int, default: int) -> int:
+    value = settings.get(key, default)
+    try:
+        parsed = round(float(value))
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"Preset value for {key} must be a number.") from exc
+    return max(minimum, min(maximum, parsed))
+
+
+def _choice(settings: dict[Any, Any], key: str, enum_class: Any, default: str) -> str:
+    value = str(settings.get(key, default))
+    allowed = {item.value for item in enum_class}
+    if value not in allowed:
+        raise ValueError(f"Preset value for {key} must be one of: {', '.join(sorted(allowed))}.")
+    return value
