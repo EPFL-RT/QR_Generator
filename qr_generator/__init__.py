@@ -1,6 +1,8 @@
 from .renderer import (
     ErrorCorrectionLevel,
+    EyeStyle,
     LogoOptions,
+    ModuleStyle,
     QrRenderResult,
     QrStyle,
     ValidationMessage,
@@ -9,7 +11,9 @@ from .renderer import (
 
 __all__ = [
     "ErrorCorrectionLevel",
+    "EyeStyle",
     "LogoOptions",
+    "ModuleStyle",
     "QrRenderResult",
     "QrStyle",
     "ValidationMessage",

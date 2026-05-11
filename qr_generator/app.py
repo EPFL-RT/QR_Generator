@@ -13,7 +13,7 @@ except ImportError as exc:
     raise SystemExit("Missing dependency: run `python -m pip install -r requirements.txt` first.") from exc
 from PIL import Image
 
-from .renderer import ErrorCorrectionLevel, LogoOptions, QrStyle, generate_qr
+from .renderer import ErrorCorrectionLevel, EyeStyle, LogoOptions, ModuleStyle, QrStyle, generate_qr
 
 
 DEFAULT_OUTPUT = Path("out/qr_with_logo.png")
@@ -30,6 +30,43 @@ ACCENT = "#2577B2"
 ACCENT_HOVER = "#1E669B"
 DANGER = "#D21F3C"
 DANGER_HOVER = "#B81731"
+
+STYLE_PRESETS = {
+    "Classic": {
+        "fill_color": "#000000",
+        "eye_color": "#000000",
+        "back_color": "#FFFFFF",
+        "module_style": ModuleStyle.SQUARE.value,
+        "eye_style": EyeStyle.SQUARE.value,
+        "module_radius": 0,
+    },
+    "EPFL Red Eyes": {
+        "fill_color": "#000000",
+        "eye_color": "#D21F3C",
+        "back_color": "#FFFFFF",
+        "module_style": ModuleStyle.SQUARE.value,
+        "eye_style": EyeStyle.ROUNDED.value,
+        "module_radius": 0,
+    },
+    "Rounded": {
+        "fill_color": "#111111",
+        "eye_color": "#D21F3C",
+        "back_color": "#FFFFFF",
+        "module_style": ModuleStyle.ROUNDED.value,
+        "eye_style": EyeStyle.ROUNDED.value,
+        "module_radius": 35,
+    },
+    "Dots": {
+        "fill_color": "#111111",
+        "eye_color": "#D21F3C",
+        "back_color": "#FFFFFF",
+        "module_style": ModuleStyle.DOTS.value,
+        "eye_style": EyeStyle.CIRCLE.value,
+        "module_radius": 50,
+        "border": 4,
+        "logo_size": 24,
+    },
+}
 
 
 class QrGeneratorApp:
@@ -49,7 +86,11 @@ class QrGeneratorApp:
         self.border = tk.IntVar(value=1)
         self.fill_color = tk.StringVar(value="#000000")
         self.back_color = tk.StringVar(value="#FFFFFF")
+        self.eye_color = tk.StringVar(value="#000000")
+        self.module_style = tk.StringVar(value=ModuleStyle.SQUARE.value)
+        self.eye_style = tk.StringVar(value=EyeStyle.SQUARE.value)
         self.module_radius = tk.IntVar(value=0)
+        self.preset_name = tk.StringVar(value="Classic")
         self.use_logo = tk.BooleanVar(value=DEFAULT_LOGO.exists())
         self.logo_path = tk.StringVar(value=str(DEFAULT_LOGO if DEFAULT_LOGO.exists() else ""))
         self.logo_size = tk.IntVar(value=30)
@@ -153,10 +194,14 @@ class QrGeneratorApp:
     def _build_qr_section(self, parent: ctk.CTkFrame) -> None:
         self._section_title(parent, "QR Code").pack(anchor="w", padx=8, pady=(24, 12))
         self._entry_row(parent, "URL", self.content)
+        self._option_row(parent, "Preset", self.preset_name, list(STYLE_PRESETS), self._apply_preset)
         self._option_row(parent, "Error Correction", self.error_correction, [level.value for level in ErrorCorrectionLevel])
+        self._option_row(parent, "Module Style", self.module_style, [style.value for style in ModuleStyle])
+        self._option_row(parent, "Eye Style", self.eye_style, [style.value for style in EyeStyle])
         self._number_row(parent, "Box Size", self.box_size, 8, 64)
         self._number_row(parent, "Border", self.border, 1, 8)
         self._color_row(parent, "Fill Color", self.fill_color, "fill")
+        self._color_row(parent, "Eye Color", self.eye_color, "eye")
         self._color_row(parent, "Background", self.back_color, "back")
         self._number_row(parent, "Roundness", self.module_radius, 0, 50)
 
@@ -249,12 +294,20 @@ class QrGeneratorApp:
             font=("Segoe UI Semibold", 15),
         ).grid(row=0, column=1, sticky="e")
 
-    def _option_row(self, parent: ctk.CTkFrame, label: str, variable: tk.StringVar, values: list[str]) -> None:
+    def _option_row(
+        self,
+        parent: ctk.CTkFrame,
+        label: str,
+        variable: tk.StringVar,
+        values: list[str],
+        command: Callable[[str], None] | None = None,
+    ) -> None:
         _, control = self._row(parent, label)
         ctk.CTkOptionMenu(
             control,
             variable=variable,
             values=values,
+            command=command,
             height=40,
             width=120,
             fg_color=ACCENT,
@@ -357,6 +410,9 @@ class QrGeneratorApp:
             self.border,
             self.fill_color,
             self.back_color,
+            self.eye_color,
+            self.module_style,
+            self.eye_style,
             self.module_radius,
             self.use_logo,
             self.logo_path,
@@ -368,6 +424,7 @@ class QrGeneratorApp:
             variable.trace_add("write", lambda *_: self._schedule_preview())
 
         self.fill_color.trace_add("write", lambda *_: self._paint_swatch("fill", self.fill_color.get()))
+        self.eye_color.trace_add("write", lambda *_: self._paint_swatch("eye", self.eye_color.get()))
         self.back_color.trace_add("write", lambda *_: self._paint_swatch("back", self.back_color.get()))
 
         if self.preview_card:
@@ -422,6 +479,9 @@ class QrGeneratorApp:
             border=self.border.get(),
             fill_color=self.fill_color.get(),
             back_color=self.back_color.get(),
+            eye_color=self.eye_color.get(),
+            module_style=ModuleStyle(self.module_style.get()),
+            eye_style=EyeStyle(self.eye_style.get()),
             module_radius=self.module_radius.get() / 100,
         )
 
@@ -442,6 +502,23 @@ class QrGeneratorApp:
         button = self.color_buttons.get(key)
         if button is not None:
             button.configure(text=color)
+
+    def _apply_preset(self, name: str) -> None:
+        preset = STYLE_PRESETS.get(name)
+        if not preset:
+            return
+
+        self.fill_color.set(str(preset["fill_color"]))
+        self.eye_color.set(str(preset["eye_color"]))
+        self.back_color.set(str(preset["back_color"]))
+        self.module_style.set(str(preset["module_style"]))
+        self.eye_style.set(str(preset["eye_style"]))
+        self.module_radius.set(int(preset["module_radius"]))
+
+        if "border" in preset:
+            self.border.set(int(preset["border"]))
+        if "logo_size" in preset:
+            self.logo_size.set(int(preset["logo_size"]))
 
     def _pick_color(self, variable: tk.StringVar) -> None:
         _, hex_color = askcolor(color=variable.get(), parent=self.root)

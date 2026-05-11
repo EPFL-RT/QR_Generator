@@ -34,8 +34,10 @@ GitHub Actions also builds the executable automatically on pushes to `dev`, pull
 ## Features
 
 - Live desktop GUI preview
-- Rounded QR modules
-- Custom foreground and background colors
+- Square, rounded, and dot QR modules
+- Square, rounded, and circular finder eyes
+- Style presets including EPFL red-eye variants
+- Custom foreground, eye, and background colors
 - Optional centered logo
 - Error correction controls
 - Quiet-zone and scan-safety warnings
