@@ -43,7 +43,11 @@ GitHub Actions also builds the executable automatically on pushes to `dev`, pull
 - Optional centered logo
 - Error correction controls
 - Quiet-zone and scan-safety warnings
-- PNG export with a file picker
+- PNG and SVG export with a file picker
+- Export size presets and custom sizing
+- Transparent background option
+- Copy generated PNGs to the clipboard
+- Open the output folder from the app
 
 ## Recommended QR Settings
 

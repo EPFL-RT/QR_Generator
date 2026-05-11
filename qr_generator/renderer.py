@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import base64
+from io import BytesIO
+import html
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -72,7 +75,55 @@ class QrRenderResult:
 
 def generate_qr(style: QrStyle, logo: LogoOptions | None = None) -> QrRenderResult:
     validation = tuple(_validate(style, logo))
+    matrix = _qr_matrix(style)
+    image = _draw_matrix(matrix, style)
 
+    if logo and logo.path:
+        image = _apply_logo(image, logo, style.back_color)
+
+    return QrRenderResult(image=image, validation=validation)
+
+
+def generate_qr_svg(
+    style: QrStyle,
+    logo: LogoOptions | None = None,
+    *,
+    transparent_background: bool = False,
+    display_size: int | None = None,
+) -> str:
+    matrix = _qr_matrix(style)
+    modules = len(matrix)
+    size = modules * style.box_size
+    width = display_size or size
+    finder_origins = _finder_origins(modules, style.border)
+    parts = [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        (
+            f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{width}" '
+            f'viewBox="0 0 {size} {size}" shape-rendering="geometricPrecision">'
+        ),
+    ]
+
+    if not transparent_background:
+        parts.append(f'<rect width="{size}" height="{size}" fill="{_svg_escape(style.back_color)}"/>')
+
+    for y, row in enumerate(matrix):
+        for x, active in enumerate(row):
+            if not active or _is_finder_module(x, y, finder_origins):
+                continue
+            parts.append(_svg_data_module(x, y, style))
+
+    for origin in finder_origins:
+        parts.extend(_svg_finder(origin, style))
+
+    if logo and logo.path:
+        parts.extend(_svg_logo(size, logo, style.back_color))
+
+    parts.append("</svg>")
+    return "\n".join(parts)
+
+
+def _qr_matrix(style: QrStyle) -> list[list[bool]]:
     qr = qrcode.QRCode(
         error_correction=EC_LEVELS[style.error_correction],
         box_size=1,
@@ -80,14 +131,7 @@ def generate_qr(style: QrStyle, logo: LogoOptions | None = None) -> QrRenderResu
     )
     qr.add_data(style.content.strip())
     qr.make(fit=True)
-
-    matrix = qr.get_matrix()
-    image = _draw_matrix(matrix, style)
-
-    if logo and logo.path:
-        image = _apply_logo(image, logo, style.back_color)
-
-    return QrRenderResult(image=image, validation=validation)
+    return qr.get_matrix()
 
 
 def _validate(style: QrStyle, logo: LogoOptions | None) -> Iterable[ValidationMessage]:
@@ -233,6 +277,101 @@ def _module_bounds(x: int, y: int, width: int, box: int) -> tuple[int, int, int,
 
 def _eye_color(style: QrStyle) -> str:
     return style.eye_color or style.fill_color
+
+
+def _svg_data_module(x: int, y: int, style: QrStyle) -> str:
+    box = style.box_size
+    left = x * box
+    top = y * box
+    fill = _svg_escape(style.fill_color)
+
+    if style.module_style == ModuleStyle.SQUARE:
+        return f'<rect x="{left}" y="{top}" width="{box}" height="{box}" fill="{fill}"/>'
+
+    if style.module_style == ModuleStyle.ROUNDED:
+        inset = max(0.5, box * 0.08)
+        size = box - inset * 2
+        radius = max(box * 0.18, box * style.module_radius)
+        return (
+            f'<rect x="{left + inset:.2f}" y="{top + inset:.2f}" width="{size:.2f}" height="{size:.2f}" '
+            f'rx="{radius:.2f}" ry="{radius:.2f}" fill="{fill}"/>'
+        )
+
+    radius = box * 0.36
+    return f'<circle cx="{left + box / 2:.2f}" cy="{top + box / 2:.2f}" r="{radius:.2f}" fill="{fill}"/>'
+
+
+def _svg_finder(origin: tuple[int, int], style: QrStyle) -> list[str]:
+    box = style.box_size
+    x, y = origin
+    eye_color = _svg_escape(_eye_color(style))
+    back_color = _svg_escape(style.back_color)
+
+    if style.eye_style == EyeStyle.CIRCLE:
+        center_x = (x + 3.5) * box
+        center_y = (y + 3.5) * box
+        return [
+            f'<circle cx="{center_x:.2f}" cy="{center_y:.2f}" r="{3.5 * box:.2f}" fill="{eye_color}"/>',
+            f'<circle cx="{center_x:.2f}" cy="{center_y:.2f}" r="{2.5 * box:.2f}" fill="{back_color}"/>',
+            f'<circle cx="{center_x:.2f}" cy="{center_y:.2f}" r="{1.5 * box:.2f}" fill="{eye_color}"/>',
+        ]
+
+    outer = _svg_rect(x, y, 7, box)
+    middle = _svg_rect(x + 1, y + 1, 5, box)
+    inner = _svg_rect(x + 2, y + 2, 3, box)
+
+    if style.eye_style == EyeStyle.ROUNDED:
+        return [
+            f'<rect {outer} rx="{box * 1.25:.2f}" ry="{box * 1.25:.2f}" fill="{eye_color}"/>',
+            f'<rect {middle} rx="{box * 0.85:.2f}" ry="{box * 0.85:.2f}" fill="{back_color}"/>',
+            f'<rect {inner} rx="{box * 0.45:.2f}" ry="{box * 0.45:.2f}" fill="{eye_color}"/>',
+        ]
+
+    return [
+        f'<rect {outer} fill="{eye_color}"/>',
+        f'<rect {middle} fill="{back_color}"/>',
+        f'<rect {inner} fill="{eye_color}"/>',
+    ]
+
+
+def _svg_logo(qr_size: int, logo: LogoOptions, back_color: str) -> list[str]:
+    if not logo.path.exists():
+        return []
+
+    logo_img = Image.open(logo.path).convert("RGBA")
+    max_logo_px = max(1, int(qr_size * logo.max_size_ratio))
+    logo_img.thumbnail((max_logo_px, max_logo_px), Image.Resampling.LANCZOS)
+
+    bg_width = logo_img.width + max(0, logo.bg_padding_x)
+    bg_height = logo_img.height + max(0, logo.bg_padding_y)
+    bg_x = (qr_size - bg_width) / 2
+    bg_y = (qr_size - bg_height) / 2
+    logo_x = bg_x + (bg_width - logo_img.width) / 2
+    logo_y = bg_y + (bg_height - logo_img.height) / 2
+
+    buffer = BytesIO()
+    logo_img.save(buffer, format="PNG")
+    encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+    radius = max(8, min(bg_width, bg_height) / 8)
+
+    return [
+        (
+            f'<rect x="{bg_x:.2f}" y="{bg_y:.2f}" width="{bg_width}" height="{bg_height}" '
+            f'rx="{radius:.2f}" ry="{radius:.2f}" fill="{_svg_escape(back_color)}"/>'
+        ),
+        (
+            f'<image x="{logo_x:.2f}" y="{logo_y:.2f}" width="{logo_img.width}" height="{logo_img.height}" '
+            f'href="data:image/png;base64,{encoded}"/>'
+        ),
+    ]
+
+
+def _svg_rect(x: int, y: int, width: int, box: int) -> str:
+    return f'x="{x * box}" y="{y * box}" width="{width * box}" height="{width * box}"'
+
+
+def _svg_escape(value: str) -> str:
+    return html.escape(value, quote=True)
 
 
 def _apply_logo(image: Image.Image, logo: LogoOptions, back_color: str) -> Image.Image:
