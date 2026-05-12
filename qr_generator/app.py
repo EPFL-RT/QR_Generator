@@ -421,6 +421,9 @@ class QrGeneratorApp:
         self.logo_safety_text = tk.StringVar(value="")
         self.logo_safety_bar: ctk.CTkProgressBar | None = None
         self.logo_safety_badge: ctk.CTkLabel | None = None
+        self.color_contrast_text = tk.StringVar(value="")
+        self.color_contrast_badge: ctk.CTkLabel | None = None
+        self.color_contrast_bar: ctk.CTkProgressBar | None = None
         self.syncing_content_box = False
         self.syncing_logo_error_correction = False
 
@@ -428,6 +431,7 @@ class QrGeneratorApp:
         self._bind_updates()
         self._sync_output_extension()
         self._update_logo_safety()
+        self._update_color_contrast()
         self._schedule_preview()
 
     def run(self) -> None:
@@ -573,6 +577,7 @@ class QrGeneratorApp:
         self._color_row(parent, "Gradient End", self.gradient_color, "gradient")
         self._color_row(parent, "Eye Color", self.eye_color, "eye")
         self._color_row(parent, "Background", self.back_color, "back")
+        self._color_contrast_controls(parent)
         self._number_row(parent, "Roundness", self.module_radius, 0, 50)
 
     def _build_logo_section(self, parent: ctk.CTkFrame) -> None:
@@ -824,6 +829,55 @@ class QrGeneratorApp:
                 font=("Segoe UI", 12),
             ).grid(row=0, column=index, sticky="ew", padx=4)
 
+    def _color_contrast_controls(self, parent: ctk.CTkFrame) -> None:
+        row = ctk.CTkFrame(parent, fg_color=PANEL, corner_radius=0)
+        row.pack(fill="x", padx=8, pady=(2, 10))
+        row.grid_columnconfigure(0, weight=1)
+
+        top = ctk.CTkFrame(row, fg_color=PANEL, corner_radius=0)
+        top.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        top.grid_columnconfigure(0, weight=1)
+
+        self.color_contrast_bar = ctk.CTkProgressBar(top, height=12, fg_color="#4A4F54", progress_color=SUCCESS)
+        self.color_contrast_bar.grid(row=0, column=0, sticky="ew", padx=(0, 10))
+        self.color_contrast_bar.set(0)
+
+        self.color_contrast_badge = ctk.CTkLabel(
+            top,
+            text="Contrast",
+            font=("Segoe UI Semibold", 12),
+            text_color="#111111",
+            fg_color=SUCCESS,
+            corner_radius=12,
+            padx=10,
+            pady=3,
+        )
+        self.color_contrast_badge.grid(row=0, column=1, sticky="e")
+
+        footer = ctk.CTkFrame(row, fg_color=PANEL, corner_radius=0)
+        footer.grid(row=1, column=0, sticky="ew")
+        footer.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(
+            footer,
+            textvariable=self.color_contrast_text,
+            font=("Segoe UI", 12),
+            text_color=MUTED,
+            anchor="w",
+        ).grid(row=0, column=0, sticky="ew")
+        ctk.CTkButton(
+            footer,
+            text="Auto Contrast",
+            command=self._auto_contrast_colors,
+            width=124,
+            height=30,
+            fg_color=FIELD,
+            hover_color="#3F4549",
+            border_color=BORDER,
+            border_width=1,
+            corner_radius=8,
+            text_color=TEXT,
+        ).grid(row=0, column=1, sticky="e", padx=(8, 0))
+
     def _export_actions(self, parent: ctk.CTkFrame) -> None:
         row = ctk.CTkFrame(parent, fg_color=PANEL, corner_radius=0)
         row.pack(fill="x", padx=8, pady=(0, 18))
@@ -992,6 +1046,11 @@ class QrGeneratorApp:
         self.gradient_color.trace_add("write", lambda *_: self._paint_swatch("gradient", self.gradient_color.get()))
         self.eye_color.trace_add("write", lambda *_: self._paint_swatch("eye", self.eye_color.get()))
         self.back_color.trace_add("write", lambda *_: self._paint_swatch("back", self.back_color.get()))
+        self.fill_color.trace_add("write", lambda *_: self._update_color_contrast())
+        self.gradient_color.trace_add("write", lambda *_: self._update_color_contrast())
+        self.eye_color.trace_add("write", lambda *_: self._update_color_contrast())
+        self.back_color.trace_add("write", lambda *_: self._update_color_contrast())
+        self.use_gradient.trace_add("write", lambda *_: self._update_color_contrast())
 
         if self.preview_card:
             self.preview_card.bind("<Configure>", lambda _: self._schedule_preview())
@@ -1223,6 +1282,34 @@ class QrGeneratorApp:
             self.logo_safety_bar.set(ratio)
         if self.logo_safety_badge is not None:
             self.logo_safety_badge.configure(text=badge_text, fg_color=color, text_color=badge_text_color)
+
+    def _auto_contrast_colors(self) -> None:
+        color = _best_contrast_color(self.back_color.get())
+        self.fill_color.set(color)
+        self.eye_color.set(color)
+        if self.use_gradient.get():
+            self.gradient_color.set(color)
+
+    def _update_color_contrast(self) -> None:
+        ratios = [
+            ("Fill", _contrast_ratio(self.fill_color.get(), self.back_color.get())),
+            ("Eye", _contrast_ratio(self.eye_color.get(), self.back_color.get())),
+        ]
+        if self.use_gradient.get():
+            ratios.append(("Gradient", _contrast_ratio(self.gradient_color.get(), self.back_color.get())))
+
+        minimum = min(ratio for _, ratio in ratios)
+        status = "Safe" if minimum >= 4.5 else "Low"
+        color = SUCCESS if minimum >= 4.5 else DANGER
+        text_color = "#111111" if minimum >= 4.5 else "#FFFFFF"
+        details = " - ".join(f"{name} {ratio:.1f}:1" for name, ratio in ratios)
+        self.color_contrast_text.set(details)
+
+        if self.color_contrast_bar is not None:
+            self.color_contrast_bar.configure(progress_color=color)
+            self.color_contrast_bar.set(min(1.0, minimum / 7.0))
+        if self.color_contrast_badge is not None:
+            self.color_contrast_badge.configure(text=status, fg_color=color, text_color=text_color)
 
     def _paint_swatch(self, key: str, color: str) -> None:
         swatch = self.color_swatches.get(key)
@@ -1573,6 +1660,31 @@ def _make_color_transparent(image: Image.Image, color: str) -> Image.Image:
             pixels.append((pixel_red, pixel_green, pixel_blue, pixel_alpha))
     transparent.putdata(pixels)
     return transparent
+
+
+def _contrast_ratio(color_a: str, color_b: str) -> float:
+    rgb_a = _relative_luminance(ImageColor.getrgb(_normalize_hex_color(color_a)))
+    rgb_b = _relative_luminance(ImageColor.getrgb(_normalize_hex_color(color_b, "#FFFFFF")))
+    lighter = max(rgb_a, rgb_b)
+    darker = min(rgb_a, rgb_b)
+    return (lighter + 0.05) / (darker + 0.05)
+
+
+def _relative_luminance(rgb: tuple[int, int, int]) -> float:
+    channels = []
+    for value in rgb[:3]:
+        normalized = value / 255
+        if normalized <= 0.03928:
+            channels.append(normalized / 12.92)
+        else:
+            channels.append(((normalized + 0.055) / 1.055) ** 2.4)
+    return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2]
+
+
+def _best_contrast_color(background: str) -> str:
+    black_ratio = _contrast_ratio("#000000", background)
+    white_ratio = _contrast_ratio("#FFFFFF", background)
+    return "#000000" if black_ratio >= white_ratio else "#FFFFFF"
 
 
 def _copy_image_to_clipboard(image: Image.Image) -> None:
