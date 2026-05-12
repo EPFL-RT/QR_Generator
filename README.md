@@ -43,7 +43,7 @@ GitHub Actions also builds the executable automatically on pushes to `dev`, pull
 - Load and save custom style presets as JSON files
 - In-app color picker with swatches, hex input, and RGB sliders
 - Custom foreground, eye, and background colors
-- Optional centered logo
+- Optional centered logo with visual safety limits
 - Error correction controls
 - Live scan-safety score with actionable quality warnings
 - Contrast, quiet-zone, logo-size, payload-density, and PNG export-size checks
