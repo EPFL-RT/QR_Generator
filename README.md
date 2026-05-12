@@ -42,7 +42,7 @@ GitHub Actions also builds the executable automatically on pushes to `dev`, pull
 - Style presets including EPFL red-eye variants
 - Load and save custom style presets as JSON files
 - In-app color picker with swatches, hex input, and RGB sliders
-- Custom foreground, eye, and background colors
+- Custom foreground, eye, gradient, and background colors with contrast guidance
 - Optional centered logo with visual safety limits
 - Error correction controls
 - Live scan-safety score with actionable quality warnings
