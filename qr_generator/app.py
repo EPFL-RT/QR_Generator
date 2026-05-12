@@ -58,6 +58,12 @@ QUALITY_COLORS = {
     "Good": WARNING,
     "Risky": DANGER,
 }
+LOGO_SAFE_PERCENT = {
+    ErrorCorrectionLevel.L.value: 10,
+    ErrorCorrectionLevel.M.value: 15,
+    ErrorCorrectionLevel.Q.value: 22,
+    ErrorCorrectionLevel.H.value: 28,
+}
 COLOR_SWATCHES = (
     "#000000",
     "#FFFFFF",
@@ -412,12 +418,16 @@ class QrGeneratorApp:
         self.export_button: ctk.CTkButton | None = None
         self.content_box: ctk.CTkTextbox | None = None
         self.content_normalize_button: ctk.CTkButton | None = None
+        self.logo_safety_text = tk.StringVar(value="")
+        self.logo_safety_bar: ctk.CTkProgressBar | None = None
+        self.logo_safety_badge: ctk.CTkLabel | None = None
         self.syncing_content_box = False
         self.syncing_logo_error_correction = False
 
         self._build_ui()
         self._bind_updates()
         self._sync_output_extension()
+        self._update_logo_safety()
         self._schedule_preview()
 
     def run(self) -> None:
@@ -579,6 +589,7 @@ class QrGeneratorApp:
         ).pack(anchor="w", padx=8, pady=(0, 10))
         self._file_row(parent, "Logo Path", self.logo_path, self._choose_logo)
         self._number_row(parent, "Max Size Ratio", self.logo_size, 10, 30, display=lambda value: f"{value / 100:.2f}")
+        self._logo_safety_controls(parent)
         self._number_row(parent, "BG Padding X", self.logo_padding_x, 0, 160)
         self._number_row(parent, "BG Padding Y", self.logo_padding_y, 0, 200)
 
@@ -765,6 +776,54 @@ class QrGeneratorApp:
                 font=("Segoe UI", 13),
             ).grid(row=index // 3, column=index % 3, sticky="ew", padx=4, pady=4)
 
+    def _logo_safety_controls(self, parent: ctk.CTkFrame) -> None:
+        row = ctk.CTkFrame(parent, fg_color=PANEL, corner_radius=0)
+        row.pack(fill="x", padx=8, pady=(2, 10))
+        row.grid_columnconfigure(0, weight=1)
+        row.grid_columnconfigure(1, weight=0)
+
+        self.logo_safety_bar = ctk.CTkProgressBar(row, height=12, fg_color="#4A4F54", progress_color=SUCCESS)
+        self.logo_safety_bar.grid(row=0, column=0, sticky="ew", padx=(0, 10), pady=(0, 8))
+        self.logo_safety_bar.set(0)
+
+        self.logo_safety_badge = ctk.CTkLabel(
+            row,
+            text="Safe",
+            font=("Segoe UI Semibold", 12),
+            text_color="#111111",
+            fg_color=SUCCESS,
+            corner_radius=12,
+            padx=10,
+            pady=3,
+        )
+        self.logo_safety_badge.grid(row=0, column=1, sticky="e", pady=(0, 8))
+
+        ctk.CTkLabel(
+            row,
+            textvariable=self.logo_safety_text,
+            font=("Segoe UI", 12),
+            text_color=MUTED,
+            anchor="w",
+        ).grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0, 8))
+
+        buttons = ctk.CTkFrame(row, fg_color=PANEL, corner_radius=0)
+        buttons.grid(row=2, column=0, columnspan=2, sticky="ew")
+        buttons.grid_columnconfigure((0, 1, 2), weight=1)
+        for index, (label, ratio) in enumerate((("Safe", 20), ("Balanced", 25), ("Bold", 28))):
+            ctk.CTkButton(
+                buttons,
+                text=label,
+                command=lambda value=ratio: self._set_logo_ratio(value),
+                height=32,
+                fg_color=FIELD,
+                hover_color="#3F4549",
+                border_color=BORDER,
+                border_width=1,
+                corner_radius=8,
+                text_color=TEXT,
+                font=("Segoe UI", 12),
+            ).grid(row=0, column=index, sticky="ew", padx=4)
+
     def _export_actions(self, parent: ctk.CTkFrame) -> None:
         row = ctk.CTkFrame(parent, fg_color=PANEL, corner_radius=0)
         row.pack(fill="x", padx=8, pady=(0, 18))
@@ -941,6 +1000,9 @@ class QrGeneratorApp:
 
         self.use_logo.trace_add("write", lambda *_: self._ensure_logo_error_correction())
         self.logo_path.trace_add("write", lambda *_: self._ensure_logo_error_correction())
+        self.use_logo.trace_add("write", lambda *_: self._update_logo_safety())
+        self.error_correction.trace_add("write", lambda *_: self._update_logo_safety())
+        self.logo_size.trace_add("write", lambda *_: self._update_logo_safety())
 
         self.export_format.trace_add("write", lambda *_: self._schedule_preview())
         self.output_size.trace_add("write", lambda *_: self._schedule_preview())
@@ -1126,6 +1188,41 @@ class QrGeneratorApp:
             self.status.set("Using H error correction for logo safety.")
         finally:
             self.syncing_logo_error_correction = False
+
+    def _set_logo_ratio(self, percent: int) -> None:
+        safe_percent = LOGO_SAFE_PERCENT.get(self.error_correction.get(), 25)
+        self.logo_size.set(min(percent, safe_percent))
+        self.use_logo.set(True)
+
+    def _update_logo_safety(self) -> None:
+        safe_percent = LOGO_SAFE_PERCENT.get(self.error_correction.get(), 25)
+        current = self.logo_size.get()
+        enabled = self.use_logo.get() and bool(self.logo_path.get().strip())
+        ratio = min(1.0, current / max(1, safe_percent))
+
+        if not enabled:
+            text = f"Logo disabled - safe limit is {safe_percent}% for {self.error_correction.get()}."
+            badge_text = "Off"
+            color = FIELD
+            badge_text_color = TEXT
+            ratio = 0
+        elif current <= safe_percent:
+            text = f"{current}% logo size is within the {safe_percent}% safe limit for {self.error_correction.get()}."
+            badge_text = "Safe"
+            color = SUCCESS
+            badge_text_color = "#111111"
+        else:
+            text = f"{current}% logo size exceeds the {safe_percent}% safe limit for {self.error_correction.get()}."
+            badge_text = "Risky"
+            color = DANGER
+            badge_text_color = "#FFFFFF"
+
+        self.logo_safety_text.set(text)
+        if self.logo_safety_bar is not None:
+            self.logo_safety_bar.configure(progress_color=color if enabled else "#4A4F54")
+            self.logo_safety_bar.set(ratio)
+        if self.logo_safety_badge is not None:
+            self.logo_safety_badge.configure(text=badge_text, fg_color=color, text_color=badge_text_color)
 
     def _paint_swatch(self, key: str, color: str) -> None:
         swatch = self.color_swatches.get(key)
