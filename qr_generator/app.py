@@ -381,6 +381,7 @@ class QrGeneratorApp:
         self.content = tk.StringVar(value="https://www.epflracingteam.ch/en")
         self.content_kind = tk.StringVar(value=ContentKind.AUTO.value)
         self.content_summary = tk.StringVar(value="URL - 33 chars")
+        self.advanced_controls_visible = tk.BooleanVar(value=False)
         self.error_correction = tk.StringVar(value=ErrorCorrectionLevel.H.value)
         self.box_size = tk.IntVar(value=24)
         self.border = tk.IntVar(value=4)
@@ -409,6 +410,10 @@ class QrGeneratorApp:
         self.preview_label: ctk.CTkLabel | None = None
         self.preview_card: ctk.CTkFrame | None = None
         self.preview_photo: ctk.CTkImage | None = None
+        self.preset_photos: dict[str, ctk.CTkImage] = {}
+        self.preset_buttons: dict[str, ctk.CTkButton] = {}
+        self.advanced_frame: ctk.CTkFrame | None = None
+        self.advanced_toggle: ctk.CTkButton | None = None
         self.status_label: ctk.CTkLabel | None = None
         self.quality_badge: ctk.CTkLabel | None = None
         self.quality_title: ctk.CTkLabel | None = None
@@ -591,30 +596,9 @@ class QrGeneratorApp:
     def _build_qr_section(self, parent: ctk.CTkFrame) -> None:
         self._section_title(parent, "QR Code").pack(anchor="w", padx=8, pady=(24, 12))
         self._content_row(parent)
-        self._option_row(parent, "Preset", self.preset_name, list(STYLE_PRESETS), self._apply_preset)
-        self._preset_palette(parent)
+        self._preset_gallery(parent)
         self._preset_actions(parent)
-        self._option_row(parent, "Error Correction", self.error_correction, [level.value for level in ErrorCorrectionLevel])
-        self._option_row(parent, "Module Style", self.module_style, [style.value for style in ModuleStyle])
-        self._option_row(parent, "Eye Style", self.eye_style, [style.value for style in EyeStyle])
-        self._number_row(parent, "Box Size", self.box_size, 8, 64)
-        self._number_row(parent, "Border", self.border, 1, 8)
-        self._color_row(parent, "Fill Color", self.fill_color, "fill")
-        ctk.CTkCheckBox(
-            parent,
-            text="Use gradient modules",
-            variable=self.use_gradient,
-            fg_color=ACCENT,
-            hover_color=ACCENT_HOVER,
-            border_color=BORDER,
-            text_color=TEXT,
-            font=("Segoe UI", 14),
-        ).pack(anchor="w", padx=8, pady=(4, 8))
-        self._color_row(parent, "Gradient End", self.gradient_color, "gradient")
-        self._color_row(parent, "Eye Color", self.eye_color, "eye")
-        self._color_row(parent, "Background", self.back_color, "back")
-        self._color_contrast_controls(parent)
-        self._number_row(parent, "Roundness", self.module_radius, 0, 50)
+        self._advanced_controls(parent)
 
     def _build_logo_section(self, parent: ctk.CTkFrame) -> None:
         self._section_title(parent, "Logo  (optional)").pack(anchor="w", padx=8, pady=(24, 12))
@@ -797,25 +781,121 @@ class QrGeneratorApp:
             text_color=TEXT,
         ).grid(row=0, column=1, sticky="ew", padx=(6, 0))
 
-    def _preset_palette(self, parent: ctk.CTkFrame) -> None:
+    def _preset_gallery(self, parent: ctk.CTkFrame) -> None:
+        ctk.CTkLabel(
+            parent,
+            text="Style Presets",
+            font=("Segoe UI Semibold", 15),
+            text_color=TEXT,
+            anchor="w",
+        ).pack(anchor="w", padx=8, pady=(16, 8))
+
         grid = ctk.CTkFrame(parent, fg_color=PANEL, corner_radius=0)
-        grid.pack(fill="x", padx=8, pady=(0, 10))
-        grid.grid_columnconfigure((0, 1, 2), weight=1)
+        grid.pack(fill="x", padx=8, pady=(0, 12))
+        grid.grid_columnconfigure((0, 1), weight=1)
 
         for index, name in enumerate(STYLE_PRESETS):
-            ctk.CTkButton(
+            card = ctk.CTkButton(
                 grid,
                 text=name,
+                image=self._preset_preview_image(name),
+                compound="top",
                 command=lambda chosen=name: self._apply_preset(chosen),
-                height=34,
-                fg_color=FIELD,
-                hover_color="#3F4549",
+                height=130,
+                fg_color=FIELD if name != self.preset_name.get() else ACCENT,
+                hover_color="#3F4549" if name != self.preset_name.get() else ACCENT_HOVER,
                 border_color=BORDER,
                 border_width=1,
                 corner_radius=8,
                 text_color=TEXT,
-                font=("Segoe UI", 13),
-            ).grid(row=index // 3, column=index % 3, sticky="ew", padx=4, pady=4)
+                font=("Segoe UI Semibold", 13),
+            )
+            card.grid(row=index // 2, column=index % 2, sticky="ew", padx=5, pady=5)
+            self.preset_buttons[name] = card
+
+    def _refresh_preset_gallery(self) -> None:
+        selected = self.preset_name.get()
+        for name, button in self.preset_buttons.items():
+            active = name == selected
+            button.configure(
+                fg_color=ACCENT if active else FIELD,
+                hover_color=ACCENT_HOVER if active else "#3F4549",
+            )
+
+    def _preset_preview_image(self, name: str) -> ctk.CTkImage:
+        cached = self.preset_photos.get(name)
+        if cached is not None:
+            return cached
+
+        preset = STYLE_PRESETS[name]
+        style = QrStyle(
+            content="https://epfl.ch",
+            error_correction=ErrorCorrectionLevel.H,
+            box_size=4,
+            border=int(preset.get("border", 4)),
+            fill_color=str(preset["fill_color"]),
+            gradient_color=str(preset.get("gradient_color", "")) if bool(preset.get("use_gradient", False)) else "",
+            back_color=str(preset["back_color"]),
+            eye_color=str(preset["eye_color"]),
+            module_style=ModuleStyle(str(preset["module_style"])),
+            eye_style=EyeStyle(str(preset["eye_style"])),
+            module_radius=int(preset["module_radius"]) / 100,
+        )
+        image = render_qr_code(style).image.resize((72, 72), Image.Resampling.LANCZOS)
+        photo = ctk.CTkImage(light_image=image, dark_image=image, size=(72, 72))
+        self.preset_photos[name] = photo
+        return photo
+
+    def _advanced_controls(self, parent: ctk.CTkFrame) -> None:
+        self.advanced_toggle = ctk.CTkButton(
+            parent,
+            text="Show Advanced Controls",
+            command=self._toggle_advanced_controls,
+            height=38,
+            fg_color=FIELD,
+            hover_color="#3F4549",
+            border_color=BORDER,
+            border_width=1,
+            corner_radius=8,
+            text_color=TEXT,
+        )
+        self.advanced_toggle.pack(fill="x", padx=8, pady=(6, 10))
+
+        self.advanced_frame = ctk.CTkFrame(parent, fg_color=PANEL, corner_radius=0)
+        self.advanced_frame.grid_columnconfigure(0, weight=1)
+        self._option_row(self.advanced_frame, "Preset", self.preset_name, list(STYLE_PRESETS), self._apply_preset)
+        self._option_row(self.advanced_frame, "Error Correction", self.error_correction, [level.value for level in ErrorCorrectionLevel])
+        self._option_row(self.advanced_frame, "Module Style", self.module_style, [style.value for style in ModuleStyle])
+        self._option_row(self.advanced_frame, "Eye Style", self.eye_style, [style.value for style in EyeStyle])
+        self._number_row(self.advanced_frame, "Box Size", self.box_size, 8, 64)
+        self._number_row(self.advanced_frame, "Border", self.border, 1, 8)
+        self._color_row(self.advanced_frame, "Fill Color", self.fill_color, "fill")
+        ctk.CTkCheckBox(
+            self.advanced_frame,
+            text="Use gradient modules",
+            variable=self.use_gradient,
+            fg_color=ACCENT,
+            hover_color=ACCENT_HOVER,
+            border_color=BORDER,
+            text_color=TEXT,
+            font=("Segoe UI", 14),
+        ).pack(anchor="w", padx=8, pady=(4, 8))
+        self._color_row(self.advanced_frame, "Gradient End", self.gradient_color, "gradient")
+        self._color_row(self.advanced_frame, "Eye Color", self.eye_color, "eye")
+        self._color_row(self.advanced_frame, "Background", self.back_color, "back")
+        self._color_contrast_controls(self.advanced_frame)
+        self._number_row(self.advanced_frame, "Roundness", self.module_radius, 0, 50)
+
+    def _toggle_advanced_controls(self) -> None:
+        visible = not self.advanced_controls_visible.get()
+        self.advanced_controls_visible.set(visible)
+        if self.advanced_frame is not None:
+            if visible:
+                self.advanced_frame.pack(fill="x", padx=0, pady=(0, 8))
+            else:
+                self.advanced_frame.pack_forget()
+        if self.advanced_toggle is not None:
+            self.advanced_toggle.configure(text="Hide Advanced Controls" if visible else "Show Advanced Controls")
 
     def _logo_safety_controls(self, parent: ctk.CTkFrame) -> None:
         row = ctk.CTkFrame(parent, fg_color=PANEL, corner_radius=0)
@@ -1395,6 +1475,7 @@ class QrGeneratorApp:
             self.border.set(int(preset["border"]))
         if "logo_size" in preset:
             self.logo_size.set(int(preset["logo_size"]))
+        self._refresh_preset_gallery()
 
     def _save_preset_file(self) -> None:
         initial_name = _preset_filename(self.preset_name.get())
@@ -1487,6 +1568,7 @@ class QrGeneratorApp:
         self.logo_size.set(_int_between(settings, "logo_size", 10, 30, self.logo_size.get()))
         self.logo_padding_x.set(_int_between(settings, "logo_padding_x", 0, 160, self.logo_padding_x.get()))
         self.logo_padding_y.set(_int_between(settings, "logo_padding_y", 0, 200, self.logo_padding_y.get()))
+        self._refresh_preset_gallery()
 
     def _serializable_logo_path(self) -> str:
         raw_path = self.logo_path.get().strip()
