@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 from io import BytesIO
 import html
+import math
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -62,6 +63,13 @@ class LogoOptions:
 
 
 @dataclass(frozen=True)
+class LogoLayout:
+    image: Image.Image
+    clear_box: tuple[int, int, int, int]
+    image_position: tuple[int, int]
+
+
+@dataclass(frozen=True)
 class ValidationMessage:
     level: str
     text: str
@@ -99,7 +107,7 @@ def generate_qr(style: QrStyle, logo: LogoOptions | None = None, *, output_size:
     image = _draw_matrix(matrix, style)
 
     if logo and logo.path and logo.path.exists():
-        image = _apply_logo(image, logo, style.back_color)
+        image = _apply_logo(image, logo, style.back_color, style.box_size)
 
     return QrRenderResult(image=image, validation=quality.messages, quality=quality)
 
@@ -116,6 +124,7 @@ def generate_qr_svg(
     size = modules * style.box_size
     width = display_size or size
     finder_origins = _finder_origins(modules, style.border)
+    logo_layout = _logo_layout(size, style.box_size, logo) if logo and logo.path else None
     parts = [
         '<?xml version="1.0" encoding="UTF-8"?>',
         (
@@ -131,13 +140,15 @@ def generate_qr_svg(
         for x, active in enumerate(row):
             if not active or _is_finder_module(x, y, finder_origins):
                 continue
+            if logo_layout and _module_intersects_box(x, y, style.box_size, logo_layout.clear_box):
+                continue
             parts.append(_svg_data_module(x, y, style, modules))
 
     for origin in finder_origins:
         parts.extend(_svg_finder(origin, style))
 
-    if logo and logo.path:
-        parts.extend(_svg_logo(size, logo, style.back_color))
+    if logo_layout:
+        parts.extend(_svg_logo(logo_layout, style.back_color))
 
     parts.append("</svg>")
     return "\n".join(parts)
@@ -438,30 +449,18 @@ def _svg_finder(origin: tuple[int, int], style: QrStyle) -> list[str]:
     ]
 
 
-def _svg_logo(qr_size: int, logo: LogoOptions, back_color: str) -> list[str]:
-    if not logo.path.exists():
-        return []
-
-    logo_img = Image.open(logo.path).convert("RGBA")
-    max_logo_px = max(1, int(qr_size * logo.max_size_ratio))
-    logo_img.thumbnail((max_logo_px, max_logo_px), Image.Resampling.LANCZOS)
-
-    bg_width = logo_img.width + max(0, logo.bg_padding_x)
-    bg_height = logo_img.height + max(0, logo.bg_padding_y)
-    bg_x = (qr_size - bg_width) / 2
-    bg_y = (qr_size - bg_height) / 2
-    logo_x = bg_x + (bg_width - logo_img.width) / 2
-    logo_y = bg_y + (bg_height - logo_img.height) / 2
-
+def _svg_logo(layout: LogoLayout, back_color: str) -> list[str]:
+    logo_img = layout.image
+    left, top, right, bottom = layout.clear_box
+    logo_x, logo_y = layout.image_position
     buffer = BytesIO()
     logo_img.save(buffer, format="PNG")
     encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
-    radius = max(8, min(bg_width, bg_height) / 8)
 
     return [
         (
-            f'<rect x="{bg_x:.2f}" y="{bg_y:.2f}" width="{bg_width}" height="{bg_height}" '
-            f'rx="{radius:.2f}" ry="{radius:.2f}" fill="{_svg_escape(back_color)}"/>'
+            f'<rect x="{left}" y="{top}" width="{right - left}" height="{bottom - top}" '
+            f'fill="{_svg_escape(back_color)}"/>'
         ),
         (
             f'<image x="{logo_x:.2f}" y="{logo_y:.2f}" width="{logo_img.width}" height="{logo_img.height}" '
@@ -478,35 +477,69 @@ def _svg_escape(value: str) -> str:
     return html.escape(value, quote=True)
 
 
-def _apply_logo(image: Image.Image, logo: LogoOptions, back_color: str) -> Image.Image:
-    logo_img = Image.open(logo.path).convert("RGBA")
+def _apply_logo(image: Image.Image, logo: LogoOptions, back_color: str, module_size: int) -> Image.Image:
     qr_w, qr_h = image.size
-    max_logo_px = max(1, int(min(qr_w, qr_h) * logo.max_size_ratio))
-
-    logo_img.thumbnail((max_logo_px, max_logo_px), Image.Resampling.LANCZOS)
-
-    bg_size = (
-        logo_img.width + max(0, logo.bg_padding_x),
-        logo_img.height + max(0, logo.bg_padding_y),
-    )
-    bg = Image.new("RGBA", bg_size, back_color)
-    bg_draw = ImageDraw.Draw(bg)
-    bg_draw.rounded_rectangle(
-        (0, 0, bg_size[0] - 1, bg_size[1] - 1),
-        radius=max(8, min(bg_size) // 8),
-        fill=back_color,
-    )
-
-    bg_pos = ((qr_w - bg.width) // 2, (qr_h - bg.height) // 2)
-    logo_pos = (
-        bg_pos[0] + (bg.width - logo_img.width) // 2,
-        bg_pos[1] + (bg.height - logo_img.height) // 2,
-    )
+    layout = _logo_layout(min(qr_w, qr_h), max(1, module_size), logo)
+    if layout is None:
+        return image
 
     composed = image.convert("RGBA")
-    composed.alpha_composite(bg, bg_pos)
-    composed.alpha_composite(logo_img, logo_pos)
+    draw = ImageDraw.Draw(composed)
+    left, top, right, bottom = layout.clear_box
+    draw.rectangle((left, top, right - 1, bottom - 1), fill=back_color)
+    composed.alpha_composite(layout.image, layout.image_position)
     return composed.convert("RGB")
+
+
+def _logo_layout(qr_size: int, module_size: int, logo: LogoOptions | None) -> LogoLayout | None:
+    if logo is None or not logo.path.exists():
+        return None
+
+    logo_img = Image.open(logo.path).convert("RGBA")
+    max_logo_px = max(1, int(qr_size * logo.max_size_ratio))
+    logo_img.thumbnail((max_logo_px, max_logo_px), Image.Resampling.LANCZOS)
+
+    requested_width = logo_img.width + max(0, logo.bg_padding_x)
+    requested_height = logo_img.height + max(0, logo.bg_padding_y)
+    raw_left = (qr_size - requested_width) / 2
+    raw_top = (qr_size - requested_height) / 2
+    raw_right = raw_left + requested_width
+    raw_bottom = raw_top + requested_height
+
+    left = max(0, _snap_down(raw_left, module_size))
+    top = max(0, _snap_down(raw_top, module_size))
+    right = min(qr_size, _snap_up(raw_right, module_size))
+    bottom = min(qr_size, _snap_up(raw_bottom, module_size))
+    if right <= left or bottom <= top:
+        return None
+
+    logo_x = round(left + ((right - left) - logo_img.width) / 2)
+    logo_y = round(top + ((bottom - top) - logo_img.height) / 2)
+    logo_x = min(max(0, logo_x), max(0, qr_size - logo_img.width))
+    logo_y = min(max(0, logo_y), max(0, qr_size - logo_img.height))
+
+    return LogoLayout(
+        image=logo_img,
+        clear_box=(left, top, right, bottom),
+        image_position=(logo_x, logo_y),
+    )
+
+
+def _module_intersects_box(x: int, y: int, box: int, clear_box: tuple[int, int, int, int]) -> bool:
+    left, top, right, bottom = clear_box
+    module_left = x * box
+    module_top = y * box
+    module_right = module_left + box
+    module_bottom = module_top + box
+    return module_left < right and module_right > left and module_top < bottom and module_bottom > top
+
+
+def _snap_down(value: float, step: int) -> int:
+    return math.floor(value / step) * step
+
+
+def _snap_up(value: float, step: int) -> int:
+    return math.ceil(value / step) * step
 
 
 def _contrast_ratio(color_a: str, color_b: str) -> float:
