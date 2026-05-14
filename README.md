@@ -46,6 +46,7 @@ GitHub Actions also builds the executable automatically on pushes to `dev`, pull
 - Optional centered logo with visual safety limits
 - Error correction controls
 - Live scan-safety score with actionable quality warnings
+- Optional generated-image scan validation
 - Contrast, quiet-zone, logo-size, payload-density, and PNG export-size checks
 - PNG and SVG export with a file picker
 - Export size presets and custom sizing
