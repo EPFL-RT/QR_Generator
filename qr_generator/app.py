@@ -27,7 +27,7 @@ from .renderer import (
     ScanQualityReport,
     generate_qr_svg,
 )
-from .scan import ScanValidationResult, validate_qr_image
+from .scan import stress_validate_qr_image, validate_qr_image
 
 
 DEFAULT_OUTPUT = Path("out/qr_with_logo.png")
@@ -404,6 +404,7 @@ class QrGeneratorApp:
         self.custom_output_size = tk.IntVar(value=_settings_int(self.app_settings, "custom_output_size", 256, 8192, 1024))
         self.transparent_background = tk.BooleanVar(value=bool(self.app_settings.get("transparent_background", False)))
         self.scan_validation_enabled = tk.BooleanVar(value=bool(self.app_settings.get("scan_validation_enabled", False)))
+        self.scan_stress_enabled = tk.BooleanVar(value=bool(self.app_settings.get("scan_stress_enabled", False)))
         self.output_path = tk.StringVar(value=str(self.app_settings.get("last_output_path") or DEFAULT_OUTPUT))
         self.status = tk.StringVar(value="Ready")
 
@@ -433,6 +434,7 @@ class QrGeneratorApp:
         self.color_contrast_bar: ctk.CTkProgressBar | None = None
         self.scan_validation_text = tk.StringVar(value="Scan validation off.")
         self.scan_validation_badge: ctk.CTkLabel | None = None
+        self.scan_stress_checkbox: ctk.CTkCheckBox | None = None
         self.syncing_content_box = False
         self.syncing_logo_error_correction = False
 
@@ -441,6 +443,7 @@ class QrGeneratorApp:
         self._sync_output_extension()
         self._update_logo_safety()
         self._update_color_contrast()
+        self._sync_scan_stress_state()
         self._schedule_preview()
 
     def run(self) -> None:
@@ -574,13 +577,26 @@ class QrGeneratorApp:
             text_color=TEXT,
             font=("Segoe UI", 13),
         ).grid(row=0, column=0, sticky="w", padx=(0, 12))
+        self.scan_stress_checkbox = ctk.CTkCheckBox(
+            scan_row,
+            text="Stress test",
+            variable=self.scan_stress_enabled,
+            fg_color=ACCENT,
+            hover_color=ACCENT_HOVER,
+            border_color=BORDER,
+            text_color=TEXT,
+            text_color_disabled=MUTED,
+            font=("Segoe UI", 13),
+        )
+        self.scan_stress_checkbox.grid(row=1, column=0, sticky="w", padx=(0, 12), pady=(6, 0))
         ctk.CTkLabel(
             scan_row,
             textvariable=self.scan_validation_text,
             font=("Segoe UI", 12),
             text_color=MUTED,
             anchor="w",
-        ).grid(row=0, column=1, sticky="ew")
+            justify="left",
+        ).grid(row=0, column=1, rowspan=2, sticky="ew")
         self.scan_validation_badge = ctk.CTkLabel(
             scan_row,
             text="Off",
@@ -591,7 +607,7 @@ class QrGeneratorApp:
             padx=10,
             pady=3,
         )
-        self.scan_validation_badge.grid(row=0, column=2, sticky="e", padx=(8, 0))
+        self.scan_validation_badge.grid(row=0, column=2, rowspan=2, sticky="e", padx=(8, 0))
 
     def _build_qr_section(self, parent: ctk.CTkFrame) -> None:
         self._section_title(parent, "QR Code").pack(anchor="w", padx=8, pady=(24, 12))
@@ -1183,10 +1199,20 @@ class QrGeneratorApp:
         self.output_size.trace_add("write", lambda *_: self._schedule_preview())
         self.custom_output_size.trace_add("write", lambda *_: self._schedule_preview())
         self.scan_validation_enabled.trace_add("write", lambda *_: self._schedule_preview())
+        self.scan_validation_enabled.trace_add("write", lambda *_: self._sync_scan_stress_state())
+        self.scan_stress_enabled.trace_add("write", lambda *_: self._schedule_preview())
         self.output_size.trace_add("write", lambda *_: self._save_app_settings())
         self.custom_output_size.trace_add("write", lambda *_: self._save_app_settings())
         self.transparent_background.trace_add("write", lambda *_: self._save_app_settings())
         self.scan_validation_enabled.trace_add("write", lambda *_: self._save_app_settings())
+        self.scan_stress_enabled.trace_add("write", lambda *_: self._save_app_settings())
+
+    def _sync_scan_stress_state(self) -> None:
+        enabled = self.scan_validation_enabled.get()
+        if not enabled and self.scan_stress_enabled.get():
+            self.scan_stress_enabled.set(False)
+        if self.scan_stress_checkbox is not None:
+            self.scan_stress_checkbox.configure(state="normal" if enabled else "disabled")
 
     def _schedule_preview(self) -> None:
         if self.after_id:
@@ -1328,8 +1354,18 @@ class QrGeneratorApp:
             self.content_normalize_button.configure(state=state)
 
     def _update_scan_validation(self, image: Image.Image, expected_content: str) -> None:
-        if not self.scan_validation_enabled.get():
+        if not self.scan_validation_enabled.get() and not self.scan_stress_enabled.get():
             self._set_scan_validation_state("Off", "Scan validation off.", FIELD, TEXT)
+            return
+
+        if self.scan_stress_enabled.get():
+            result = stress_validate_qr_image(image, expected_content)
+            if result.status == "passed":
+                self._set_scan_validation_state(f"{result.passed_cases}/{result.total_cases}", result.message, SUCCESS, "#111111")
+            elif result.status == "failed":
+                self._set_scan_validation_state(f"{result.passed_cases}/{result.total_cases}", result.message, DANGER, "#FFFFFF")
+            else:
+                self._set_scan_validation_state("N/A", result.message, FIELD, TEXT)
             return
 
         result = validate_qr_image(image, expected_content)
@@ -1736,6 +1772,7 @@ class QrGeneratorApp:
             "custom_output_size": self.custom_output_size.get(),
             "transparent_background": self.transparent_background.get(),
             "scan_validation_enabled": self.scan_validation_enabled.get(),
+            "scan_stress_enabled": self.scan_stress_enabled.get(),
         }
         _save_app_settings(self.app_settings)
 

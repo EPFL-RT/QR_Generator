@@ -12,7 +12,7 @@ from .renderer import (
     generate_qr,
     generate_qr_svg,
 )
-from .scan import ScanValidationResult, validate_qr_image
+from .scan import ScanStressValidationResult, ScanValidationResult, stress_validate_qr_image, validate_qr_image
 
 __all__ = [
     "ContentAnalysis",
@@ -26,11 +26,13 @@ __all__ = [
     "QrStyle",
     "ScanValidationResult",
     "ScanQualityReport",
+    "ScanStressValidationResult",
     "ValidationMessage",
     "analyze_content",
     "assess_scan_quality",
     "generate_qr",
     "generate_qr_svg",
     "render_qr_code",
+    "stress_validate_qr_image",
     "validate_qr_image",
 ]
