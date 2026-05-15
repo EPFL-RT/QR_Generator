@@ -434,6 +434,7 @@ class QrGeneratorApp:
         self.color_contrast_bar: ctk.CTkProgressBar | None = None
         self.scan_validation_text = tk.StringVar(value="Scan validation off.")
         self.scan_validation_badge: ctk.CTkLabel | None = None
+        self.scan_stress_checkbox: ctk.CTkCheckBox | None = None
         self.syncing_content_box = False
         self.syncing_logo_error_correction = False
 
@@ -442,6 +443,7 @@ class QrGeneratorApp:
         self._sync_output_extension()
         self._update_logo_safety()
         self._update_color_contrast()
+        self._sync_scan_stress_state()
         self._schedule_preview()
 
     def run(self) -> None:
@@ -575,7 +577,7 @@ class QrGeneratorApp:
             text_color=TEXT,
             font=("Segoe UI", 13),
         ).grid(row=0, column=0, sticky="w", padx=(0, 12))
-        ctk.CTkCheckBox(
+        self.scan_stress_checkbox = ctk.CTkCheckBox(
             scan_row,
             text="Stress test",
             variable=self.scan_stress_enabled,
@@ -583,8 +585,10 @@ class QrGeneratorApp:
             hover_color=ACCENT_HOVER,
             border_color=BORDER,
             text_color=TEXT,
+            text_color_disabled=MUTED,
             font=("Segoe UI", 13),
-        ).grid(row=1, column=0, sticky="w", padx=(0, 12), pady=(6, 0))
+        )
+        self.scan_stress_checkbox.grid(row=1, column=0, sticky="w", padx=(0, 12), pady=(6, 0))
         ctk.CTkLabel(
             scan_row,
             textvariable=self.scan_validation_text,
@@ -1195,12 +1199,20 @@ class QrGeneratorApp:
         self.output_size.trace_add("write", lambda *_: self._schedule_preview())
         self.custom_output_size.trace_add("write", lambda *_: self._schedule_preview())
         self.scan_validation_enabled.trace_add("write", lambda *_: self._schedule_preview())
+        self.scan_validation_enabled.trace_add("write", lambda *_: self._sync_scan_stress_state())
         self.scan_stress_enabled.trace_add("write", lambda *_: self._schedule_preview())
         self.output_size.trace_add("write", lambda *_: self._save_app_settings())
         self.custom_output_size.trace_add("write", lambda *_: self._save_app_settings())
         self.transparent_background.trace_add("write", lambda *_: self._save_app_settings())
         self.scan_validation_enabled.trace_add("write", lambda *_: self._save_app_settings())
         self.scan_stress_enabled.trace_add("write", lambda *_: self._save_app_settings())
+
+    def _sync_scan_stress_state(self) -> None:
+        enabled = self.scan_validation_enabled.get()
+        if not enabled and self.scan_stress_enabled.get():
+            self.scan_stress_enabled.set(False)
+        if self.scan_stress_checkbox is not None:
+            self.scan_stress_checkbox.configure(state="normal" if enabled else "disabled")
 
     def _schedule_preview(self) -> None:
         if self.after_id:
